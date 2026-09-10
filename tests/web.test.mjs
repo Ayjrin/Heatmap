@@ -176,7 +176,7 @@ test('loader rejects absent, synthetic, and unknown provenance without replacing
   assert.equal(D.dataset_id, 'test-v1');
 });
 
-test('zero-event real games load as an empty heatmap with actual match metadata', async () => {
+test('zero-event games load as an empty heatmap with actual match metadata', async () => {
   const data = sample(); data.rows = 0;
   for (const [key, value] of Object.entries(data.cols)) data.cols[key] = new value.constructor(0);
   const empty = release('zero', data); await loadBundle(empty.fetcher);
@@ -252,8 +252,17 @@ test('collection preflight auth failure stays visible, and polling acknowledges 
   await controller.start('smoke'); assert.ok(controller.pending);
   method = 'ok'; await controller.poll();
   assert.equal(controller.pending, null); assert.equal(controller.busy, false);
-  assert.match(runDescription(controller.value.run), /Riot key needs updating.*0 of 50/);
+  assert.match(runDescription(controller.value.run), /Riot key needs updating/);
   assert.equal(controller.value.dataset.count, 250);
+});
+
+test('the run description names its stage and never quotes a game or kill count', () => {
+  const run = { status: 'running', stage: 'discovering', new_games: 0, target: null,
+    discovered_games: 12, players: 1000, scanned_players: 240 };
+  assert.equal(runDescription(run), 'Collecting · discovering');
+  assert.equal(runDescription({ ...run, stage: 'collecting' }), 'Collecting · collecting');
+  assert.doesNotMatch(runDescription(run), /\d/);
+  assert.equal(runDescription(null), 'Ready to collect ranked games.');
 });
 
 test('production verifier reads only isolated test releases and rejects synthetic provenance', async () => {

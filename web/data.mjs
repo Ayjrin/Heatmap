@@ -7,7 +7,7 @@ export class DatasetError extends Error {
 async function response(url, fetcher = fetch) {
   const result = await fetcher(url, { cache: 'no-cache' });
   if (!result.ok) throw new DatasetError(result.status === 404
-    ? 'No real dataset has been published yet.' : 'The dataset could not be loaded. Please retry.',
+    ? 'No dataset has been published yet.' : 'The dataset could not be loaded. Please retry.',
   result.status === 404 ? 'empty' : 'network');
   return result;
 }
@@ -124,7 +124,7 @@ export async function loadBundle(fetcher = fetch) {
   if (manifest.meta.dataset_id && manifest.meta.dataset_id !== pointer.dataset_id)
     throw new DatasetError('The dataset version does not match its release.');
   if (!Number.isSafeInteger(manifest.rows) || manifest.rows < 0 || !manifest.core
-    || !/^[\w.-]+$/.test(manifest.core.file)) throw new DatasetError('The real dataset is empty or invalid.');
+    || !/^[\w.-]+$/.test(manifest.core.file)) throw new DatasetError('The dataset is empty or invalid.');
   const [core, matches, players, champions, regions] = await Promise.all([
     response(`${base}/${manifest.core.file}`, fetcher).then(r => r.arrayBuffer()),
     ...['matches', 'players', 'champions', 'regions'].map(file =>

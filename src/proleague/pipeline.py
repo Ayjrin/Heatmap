@@ -22,8 +22,10 @@ from .pipeline_state import DynamoState, LocalState, OwnershipError
 
 MODES = {"smoke": 50, "small": 250, "full": None}
 TERMINAL = {"succeeded", "failed", "auth_required", "paused"}
+SETTLED = {"complete", "cached", "rejected"}
 PUBLIC_FIELDS = ("run_id", "mode", "status", "stage", "new_games", "target",
-                 "started_at", "updated_at", "published_version", "discovered_games")
+                 "started_at", "updated_at", "published_version", "discovered_games",
+                 "players", "scanned_players")
 SETTINGS = ("platform", "region", "tiers", "patches", "start_time_epoch", "matches_per_player")
 log = logging.getLogger(__name__)
 
@@ -47,7 +49,9 @@ def snapshot(state):
     public = {k: run[k] for k in PUBLIC_FIELDS if k in run} if run else None
     if public and public["status"] in {"auth_required", "failed", "paused"}:
         public["error"] = {
-            "auth_required": "The Riot API key needs to be added or refreshed before another manual run.",
+            "auth_required": ("Riot rejected the API key. Development keys expire 24 hours after they are issued. "
+                              "Get a fresh key at developer.riotgames.com and store it in the AWS SSM parameter "
+                              "with scripts/aws_key.py before starting another manual run."),
             "failed": "Collection stopped. Completed games were saved; check the private run logs.",
             "paused": ("The available histories contained fewer new eligible games than the target."
                        if public.get("stage") == "exhausted" else
@@ -96,7 +100,8 @@ class Collection:
     """Run ownership protects checkpoints and publication from concurrent workers.
 
     RUNMATCH records reconcile counts after an interrupted write. Each new run
-    gets fresh ladder/history checkpoints, while MATCH records dedupe globally.
+    gets fresh ladder/history checkpoints, while MATCH records dedupe globally
+    and PLAYER records carry each history's scanned window between runs.
     Raw ladder, match, and timeline responses are never written to storage.
     """
 
@@ -111,8 +116,9 @@ class Collection:
         self.heartbeat_stop = threading.Event()
         self.ownership_lost = threading.Event()
         self.run = {}
-        self.players, self.candidates, self.known = {}, {}, {}
+        self.players, self.candidates, self.known, self.scanned = {}, {}, {}, {}
         self.successes = set()
+        self.scope = None
         self.preflight_ladder = None
         self.hb = None
 
@@ -150,8 +156,11 @@ class Collection:
             self.patch(new_games=len(self.successes))
 
     def recover(self):
+        self.scope = hashlib.sha256(json_bytes(
+            {"patches": self.cfg.patches, "schema": SCHEMA_VERSION})).hexdigest()
         self.successes = {r["match_id"] for r in self.state.scan(f"RUNMATCH#{self.run_id}#")}
         self.known = {r["match_id"]: r for r in self.state.scan("MATCH#")}
+        self.scanned = {r["puuid"]: plain(r) for r in self.state.scan(self.player_key(""))}
         mid = self.run.get("inflight_match_id")
         if mid:
             complete = read_complete(self.store, mid)
@@ -160,6 +169,52 @@ class Collection:
         self.patch(new_games=len(self.successes), inflight_match_id=None)
         self.players = {r["puuid"]: plain(r) for r in self.state.scan(f"RUNPLAYER#{self.run_id}#")}
         self.candidates = {r["match_id"]: plain(r) for r in self.state.scan(f"DISCOVERY#{self.run_id}#")}
+
+    def player_key(self, puuid):
+        # Histories are regional, so a watermark only speaks for its own region.
+        return f"PLAYER#{self.cfg.region}#{puuid}"
+
+    def since(self, puuid):
+        """History floor for one player: the end of the window a previous run
+        finished scanning, so Riot lists only games we have never seen.
+
+        A stored mark is honoured only when it starts at or below the configured
+        floor. Widening the crawl by lowering start_time_epoch therefore rescans
+        the whole window instead of silently keeping the older games hidden.
+        """
+        floor = self.cfg.start_time_epoch or 0
+        mark = self.scanned.get(puuid) or {}
+        if mark.get("scanned_from", 0) > floor:
+            return floor
+        return max(floor, int(mark.get("scanned_to", 0)))
+
+    def settled(self, match_id):
+        """Global dedupe. A match already committed under this schema, or already
+        rejected under this patch scope, costs no Riot request in any later run."""
+        known = self.known.get(match_id) or {}
+        if known.get("status") == "complete" and known.get("schema_version") == SCHEMA_VERSION:
+            return "cached"
+        if known.get("status") == "rejected" and known.get("scope") == self.scope:
+            return "rejected"
+        return None
+
+    def advance_watermarks(self):
+        """Record how far each fully walked history has been scanned.
+
+        A player whose pool still holds an unsettled match keeps its old mark, so
+        an interrupted, depth-capped, or retry-required run can never advance
+        past a match ID it has not accounted for.
+        """
+        floor = self.cfg.start_time_epoch or 0
+        unsettled = [c for c in self.candidates.values() if c["status"] not in SETTLED]
+        if any("puuid" not in c for c in unsettled):
+            return  # A run resumed from before discovery attribution; attribute nothing.
+        blocked = {c["puuid"] for c in unsettled}
+        self.state.put_many([
+            (self.player_key(p["puuid"]),
+             {"puuid": p["puuid"], "scanned_from": floor,
+              "scanned_to": max(p.get("since") or 0, self.run["started_at"])})
+            for p in self.players.values() if p["done"] and p["puuid"] not in blocked])
 
     def target_reached(self):
         return self.run["target"] is not None and len(self.successes) >= self.run["target"]
@@ -184,7 +239,8 @@ class Collection:
                     raise ValidationError("The ladder response is missing a player PUUID")
                 if puuid in self.players:
                     continue
-                player = {"puuid": puuid, "tier": tier, "next_start": 0, "done": False}
+                player = {"puuid": puuid, "tier": tier, "next_start": 0, "done": False,
+                          "since": self.since(puuid)}
                 self.players[puuid] = player
                 records.append((f"RUNPLAYER#{self.run_id}#{puuid}", player))
             self.state.put_many(records)
@@ -204,15 +260,17 @@ class Collection:
             player["done"] = True
         else:
             ids = self.client.match_ids_by_puuid(Region(self.cfg.region), player["puuid"],
-                queue=420, start=start, count=count, start_time=self.cfg.start_time_epoch,
+                queue=420, start=start, count=count, start_time=player.get("since") or None,
                 end_time=self.run["started_at"])
             if not isinstance(ids, list):
                 raise ValidationError("Match history is not a list")
             records = []
             for mid in ids:
                 match_prefix(mid)
-                if mid not in self.candidates:
-                    candidate = {"match_id": mid, "status": "pending"}
+                # Dedupe before the pool, not at fetch time: a match we already
+                # own costs no discovery record and no place in the run's work.
+                if mid not in self.candidates and not self.settled(mid):
+                    candidate = {"match_id": mid, "status": "pending", "puuid": player["puuid"]}
                     self.candidates[mid] = candidate
                     records.append((f"DISCOVERY#{self.run_id}#{mid}", candidate))
             # IDs are durable before advancing the history cursor.
@@ -220,7 +278,10 @@ class Collection:
             player["next_start"] += len(ids)
             player["done"] = len(ids) < count or player["next_start"] >= self.cfg.matches_per_player
         self.state.put(f"RUNPLAYER#{self.run_id}#{player['puuid']}", player)
-        self.patch(discovered_games=len(self.candidates))
+        # A refresh that finds nothing new leaves discovered_games at zero for
+        # the whole stage, so walked histories carry the progress signal.
+        self.patch(discovered_games=len(self.candidates),
+                   scanned_players=sum(1 for p in self.players.values() if p["done"]))
 
     def ordered(self, values, field):
         return sorted(values, key=lambda r: hashlib.sha256(
@@ -228,20 +289,17 @@ class Collection:
 
     def process(self, candidates):
         self.patch(stage="collecting")
-        scope = hashlib.sha256(json_bytes({"patches": self.cfg.patches, "schema": SCHEMA_VERSION})).hexdigest()
         for candidate in self.ordered(candidates, "match_id"):
             if self.target_reached():
                 return
-            if candidate["status"] in {"complete", "cached", "rejected"}:
+            if candidate["status"] in SETTLED:
                 continue
             self.check()
             mid = candidate["match_id"]
-            known = self.known.get(mid, {})
-            if known.get("status") == "complete" and known.get("schema_version") == SCHEMA_VERSION:
-                status = "cached"
-            elif known.get("status") == "rejected" and known.get("scope") == scope:
-                status = "rejected"
-            else:
+            # Discovery filters settled matches out of the pool, so this only
+            # fires for records an earlier run left pending or errored.
+            status = self.settled(mid)
+            if status is None:
                 # Save the identity before ingestion, so a commit/count crash is recoverable.
                 self.patch(inflight_match_id=mid)
                 try:
@@ -255,7 +313,7 @@ class Collection:
                         status = "error"  # retry on a later manual run, never discard an unfinished timeline
                     else:
                         status = "rejected"
-                        item = {"match_id": mid, "status": status, "reason": why, "scope": scope}
+                        item = {"match_id": mid, "status": status, "reason": why, "scope": self.scope}
                         self.state.put("MATCH#" + mid, item)
                         self.known[mid] = item
                 except AuthError:
@@ -319,6 +377,7 @@ class Collection:
                 raise RiotAPIError("Riot key validation did not return a ladder")
             self.collect()
             self.check()
+            self.advance_watermarks()
             if any(r.get("status") == "complete" for r in self.known.values()):
                 self.patch(stage="publishing")
                 published = self.publisher(self.store, self.site, run_id=self.run_id, before_publish=self.check)
