@@ -22,13 +22,18 @@ from botocore.exceptions import ClientError
 
 MODES = {"smoke": 50, "small": 250, "full": None}
 TERMINAL = {"auth_required", "failed", "succeeded", "paused"}
-# discovered_games is the only sign of life during a full run's discovery
-# stage, which reads every ladder player's history before fetching one game.
-# Without it the page shows "0 new games" for half an hour and looks stuck.
+# These are the only sign of life during a full run's discovery stage, which
+# reads every ladder player's history before fetching one game. Without them the
+# page shows "0 new games" for half an hour and looks stuck. A refresh can also
+# read a walked history and find nothing new, so scanned_players/players carry
+# the progress that discovered_games cannot.
 PUBLIC_FIELDS = ("run_id", "mode", "status", "stage", "new_games", "target",
-                 "started_at", "updated_at", "published_version", "discovered_games")
+                 "started_at", "updated_at", "published_version", "discovered_games",
+                 "players", "scanned_players")
 ERRORS = {
-    "auth_required": "The Riot API key needs to be added or refreshed before another manual run.",
+    "auth_required": ("Riot rejected the API key. Development keys expire 24 hours after they are issued. "
+                      "Get a fresh key at developer.riotgames.com and store it in the AWS SSM parameter "
+                      "with scripts/aws_key.py before starting another manual run."),
     "failed": "Collection stopped. Completed games were saved; check the private run logs.",
     "paused": "Collection paused. Completed games were saved and can be resumed manually.",
 }

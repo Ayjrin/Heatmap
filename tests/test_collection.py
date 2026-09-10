@@ -23,10 +23,15 @@ from proleague.extract.routing import Region
 from proleague.pipeline_state import LocalState, OwnershipError
 
 
+PLAYER_MARK = "PLAYER#americas#test-player"
+
+
 class Histories:
     def __init__(self, count):
         self.ids = [f"NA1_{i}" for i in range(count)]
+        self.created = {mid: 0 for mid in self.ids}
         self.history_calls = 0
+        self.windows = []
         self.expired = False
 
     def apex_league(self, *_):
@@ -34,9 +39,18 @@ class Histories:
             raise AuthError("expired test key")
         return {"entries": [{"puuid": "test-player"}]}
 
-    def match_ids_by_puuid(self, *_, start, count, **kwargs):
+    def played(self, match_id, created_at):
+        self.ids.append(match_id)
+        self.created[match_id] = created_at
+
+    def match_ids_by_puuid(self, *_, start, count, start_time=None, **kwargs):
+        # match-v5 bounds a history server-side, so the double honours startTime.
+        # endTime is ignored: a test's runs share one wall-clock second, and a
+        # game "played after the last run" would otherwise be unreachable.
         self.history_calls += 1
-        return self.ids[start:start + count]
+        self.windows.append(start_time)
+        visible = [m for m in self.ids if start_time is None or self.created[m] > start_time]
+        return visible[start:start + count]
 
 
 @pytest.fixture
@@ -75,10 +89,53 @@ def test_smoke_then_small_are_new_successes_and_full_refreshes(setup):
     full = run(client, "full")
     assert (full["status"], full["new_games"], len(commits)) == ("succeeded", 20, 320)
     calls = client.history_calls
-    client.ids.append("NA1_999")
+    client.played("NA1_999", full["started_at"] + 1)
     refreshed = run(client, "full")
-    assert refreshed["new_games"] == 1 and client.history_calls > calls
+    # The walked history is now watermarked, so the refresh reads one page of
+    # genuinely new IDs rather than paging back over 320 games it already owns.
+    assert refreshed["new_games"] == 1 and client.history_calls == calls + 1
     assert state.get("ACTIVE") is None
+
+
+def test_second_run_lists_only_games_newer_than_the_scanned_window(setup):
+    state, commits, run = setup
+    client = Histories(3)
+    first = run(client, "full")
+    assert (first["new_games"], first["discovered_games"]) == (3, 3)
+    assert client.windows == [None] and state.get(PLAYER_MARK)["scanned_to"] == first["started_at"]
+    client.played("NA1_999", first["started_at"] + 1)
+    second = run(client, "full")
+    # Discovery asks Riot only for the window it has never scanned, and the
+    # candidate pool holds new games alone -- no request is spent re-listing or
+    # re-fetching the three games already committed.
+    assert client.windows[1:] == [first["started_at"]]
+    assert (second["new_games"], second["discovered_games"]) == (1, 1)
+    assert set(commits) == {"NA1_0", "NA1_1", "NA1_2", "NA1_999"}
+    assert state.get(PLAYER_MARK)["scanned_to"] == second["started_at"]
+
+
+def test_unsettled_match_holds_the_watermark_until_a_later_run_retries_it(setup, monkeypatch):
+    state, commits, run = setup
+    original = pipeline.ingest_match
+    flaky = ["NA1_1"]
+
+    def transient(client, region, mid, store, **kwargs):
+        if mid in flaky:
+            flaky.remove(mid)
+            raise RiotAPIError("temporary")
+        return original(client, region, mid, store, **kwargs)
+
+    monkeypatch.setattr(pipeline, "ingest_match", transient)
+    client = Histories(3)
+    first = run(client, "full")
+    assert (first["status"], first["stage"], first["new_games"]) == ("paused", "retry_required", 2)
+    # A history holding an unaccounted match must not be watermarked past it,
+    # or the retry would never be rediscovered by a later run.
+    assert state.get(PLAYER_MARK) is None
+    second = run(client, "full")
+    assert (second["status"], second["new_games"]) == ("succeeded", 1)
+    assert set(commits) == {"NA1_0", "NA1_1", "NA1_2"}
+    assert state.get(PLAYER_MARK)["scanned_to"] == second["started_at"]
 
 
 def test_exhaustion_reports_actual_count_and_publishes(setup):

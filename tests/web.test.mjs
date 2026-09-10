@@ -256,6 +256,14 @@ test('collection preflight auth failure stays visible, and polling acknowledges 
   assert.equal(controller.value.dataset.count, 250);
 });
 
+test('discovery reports walked histories when an incremental refresh finds no new games', () => {
+  const run = { status: 'running', stage: 'discovering', new_games: 0, target: null,
+    discovered_games: 0, players: 1000, scanned_players: 240 };
+  assert.match(runDescription(run), /0 new games · 240 of 1,000 histories read/);
+  assert.match(runDescription({ ...run, discovered_games: 12 }), /12 candidates found/);
+  assert.doesNotMatch(runDescription({ ...run, stage: 'collecting' }), /histories read/);
+});
+
 test('production verifier reads only isolated test releases and rejects synthetic provenance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'heatmap-browser-test-'));
   try {

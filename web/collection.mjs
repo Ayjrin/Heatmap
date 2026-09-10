@@ -70,7 +70,13 @@ export function runDescription(run) {
   const stage = typeof run.stage === 'string' ? run.stage.replaceAll('_', ' ') : '';
   // An update reads every ladder history before fetching its first game, so
   // report the growing candidate pool rather than leaving a long, still zero.
+  // A refresh can walk those histories and find nothing new, so fall back to
+  // the histories read: the stage is working even when the pool stays empty.
   const found = Math.max(0, Number(run.discovered_games) || 0);
-  const discovery = found ? ` · ${found.toLocaleString()} candidates found` : '';
+  const ladder = Math.max(0, Number(run.players) || 0);
+  const read = Math.max(0, Number(run.scanned_players) || 0);
+  const discovery = found ? ` · ${found.toLocaleString()} candidates found`
+    : ladder && run.stage === 'discovering'
+      ? ` · ${read.toLocaleString()} of ${ladder.toLocaleString()} histories read` : '';
   return `${labels[run.status] || 'Collection status'} · ${progress}${discovery}${stage ? ` · ${stage}` : ''}`;
 }

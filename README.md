@@ -22,6 +22,8 @@ The **Game data** section has one button, **Update game data**. It refreshes the
 
 Cached, rejected, and failed games do not count as new; eligible games with zero kill events do count. Concurrent clicks show the active run.
 
+Discovery is incremental, so a refresh spends its rate limit on games it does not have. Listed match IDs are deduplicated against every game already collected or rejected before they enter the run's pool, and each fully walked history records the end of the window it scanned. Later runs bound the next listing with that watermark, so Riot returns only games played since. A history still holding an unaccounted game — interrupted, depth-capped, or awaiting retry — keeps its previous watermark, so no match ID can be skipped. Lowering `start_time_epoch` widens the window and rescans it rather than leaving the older games hidden.
+
 The bounded `smoke` (50 games) and `small` (250 games) modes still exist behind the API and the CLI for quick verification; they are simply no longer exposed as buttons. A bounded run that cannot be satisfied from available histories reports the actual count and pauses instead of claiming completion.
 
 Equivalent commands are `make smoke`, `make small`, `make full`, and `make status`. Resume a paused run’s original quota with:
@@ -41,7 +43,7 @@ flowchart LR
   Riot[Riot ladder and Match V5 APIs] --> Worker[One Docker ETL worker]
   Worker --> Context[Selected match context]
   Worker --> Facts[Validated Parquet facts]
-  Worker --> State[Run and discovery checkpoints]
+  Worker --> State[Run, history, and discovery checkpoints]
   Context --> Build[Validate and build release]
   Facts --> Build
   Build --> Warehouse[Parquet facts and dimensions]
@@ -92,6 +94,8 @@ The deployed API has no sign-in requirement, as intended for this proof of conce
 The local development server implements the same application API. In AWS, Lambda validates the key before starting Fargate. Missing or rejected credentials return `auth_required` without a task launch. A worker encountering expiry checkpoints, exits, and requires a refreshed key plus a manual trigger. Run statuses are `starting`, `running`, `succeeded`, `paused`, `auth_required`, and `failed`.
 
 The Riot key is an SSM SecureString. Terraform handles only its name and ARN. `scripts/aws_key.py` validates the local value and uploads it without printing it; neither Terraform state, the image, the site, nor API responses contain the key.
+
+Riot development keys expire 24 hours after they are issued, so the deployed **Update game data** button will eventually refuse to launch. Each click preflights the stored key against Riot first: a rejected or missing key ends the run at `auth_required` before any Fargate task starts, and the page asks for a new key. To recover, regenerate the key at developer.riotgames.com, put it in `.env`, and run `.venv/bin/python scripts/aws_key.py` to overwrite the SSM SecureString; then press the button again. `scripts/aws_key.py --check-only` reports whether the local key is still live without touching SSM.
 
 ```sh
 # Optional local Docker workflow
