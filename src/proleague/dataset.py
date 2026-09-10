@@ -16,7 +16,7 @@ from .curated import (CURATED_PREFIX, FACT_COLUMNS, SCHEMA_VERSION, S3Objects,
                       ValidationError, digest, json_bytes, sql_path)
 from .serve.bundle import TYPES, bytes_per_row
 from .transform.kills import COLUMNS, CORE_COLUMNS, build_participants
-from .transform.regions import REGION_NAMES, region_group
+from .transform.regions import REGIONS, REGION_NAMES, region_group, region_sk
 
 DIM_MATCH_COLUMNS = [("match_id", "VARCHAR"), ("patch", "VARCHAR"), ("duration", "BIGINT"),
                      ("blue_win", "BOOLEAN"), ("game_start_ms", "BIGINT"), ("collected_at", "BIGINT")]
@@ -27,6 +27,12 @@ DIM_PARTICIPANT_COLUMNS = [("match_id", "VARCHAR"), ("participant_id", "BIGINT")
 
 # Bump whenever the release serialization or dictionary semantics change.
 RELEASE_FORMAT_VERSION = 2
+
+# The zone map is content, not code: released labels are only meaningful next to
+# the polygons that produced them. Folding its digest into the dataset id means
+# editing the map publishes a new immutable release instead of colliding with
+# the old one, and no manual version bump is needed to remember that.
+ZONE_DIGEST = digest(json_bytes(REGIONS))[:16]
 
 
 def _make_table(con, name, columns):
@@ -76,7 +82,7 @@ def build_release(store, site, *, run_id="rebuild", before_publish=None):
             _make_table(con, "fact_kill", FACT_COLUMNS)
             _make_table(con, "dim_match", DIM_MATCH_COLUMNS)
             _make_table(con, "dim_participant", DIM_PARTICIPANT_COLUMNS)
-            for key in keys:
+            for index, key in enumerate(keys):
                 complete = json.loads(store.get(key))
                 if complete.get("source_kind") != "riot" or complete.get("schema_version") != SCHEMA_VERSION:
                     raise ValidationError("Publication requires live Riot provenance and the current schema")
@@ -85,20 +91,30 @@ def build_release(store, site, *, run_id="rebuild", before_publish=None):
                 if context_raw is None or facts_raw is None:
                     raise ValidationError("A completed match is missing a required curated object")
                 if digest(context_raw) != complete["context_sha256"] or digest(facts_raw) != complete["facts_sha256"]:
-                    raise ValidationError("Curated input failed its integrity check")
+                    raise ValidationError(f"Curated input failed its integrity check: {complete['match_id']}")
                 context = json.loads(context_raw)
                 mid = context["metadata"]["matchId"]
                 if context.get("source_kind") != "riot" or mid != complete["match_id"]:
                     raise ValidationError("Curated context provenance or identity is inconsistent")
-                parquet = work / "one-match.parquet"
+                # One file per match, never a reused name. DuckDB keys internal
+                # per-file state on the path, and overwriting a single scratch
+                # filename thousands of times exhausts it: a build died with
+                # "Out of buffer" on the 3,314th match at 185MB RSS and 8 open
+                # descriptors, and raising memory_limit to 1400MB moved the
+                # failure not one match. Unlink as we go so the working set is
+                # still one match at a time.
+                parquet = work / f"match-{index}.parquet"
                 parquet.write_bytes(facts_raw)
                 count, invalid = con.execute(
                     f"SELECT count(*), count(*) FILTER (WHERE match_id != ?) FROM read_parquet({sql_path(parquet)})",
                     [mid]).fetchone()
                 if invalid or count != complete["row_count"]:
-                    raise ValidationError("Curated facts do not reconcile with the match commit")
+                    raise ValidationError(
+                        f"Curated facts do not reconcile with the match commit: {mid} holds {count} rows "
+                        f"({invalid} under another match id), commit claims {complete['row_count']}")
                 names = ",".join(f'"{n}"' for n, _ in FACT_COLUMNS)
                 con.execute(f"INSERT INTO fact_kill SELECT {names} FROM read_parquet({sql_path(parquet)})")
+                parquet.unlink()
                 info = context["info"]
                 parts = build_participants(context)
                 blue = next(p for p in parts.values() if p.team_id == 100)
@@ -111,6 +127,22 @@ def build_release(store, site, *, run_id="rebuild", before_publish=None):
                      p.champ_id, p.team_id, p.role_sk, p.won) for p in parts.values()], len(DIM_PARTICIPANT_COLUMNS))
                 inventory.append({"match_id": mid, "context_sha256": digest(context_raw),
                                   "facts_sha256": digest(facts_raw), "rows": count})
+            # A zone label is geometry, not collected data, so re-derive it from
+            # the stored coordinates instead of trusting whatever zone map was
+            # current when the game was crawled. Raw Riot responses are never
+            # kept, so without this a change to the zone map could only ever
+            # apply to games collected after it -- the labels on everything
+            # already in the store would be frozen.
+            #
+            # Scalar Python, streamed through its own cursor so the coordinates
+            # stay in bounded batches. A DuckDB UDF would be neater but drags in
+            # numpy, which this project stays clear of.
+            _make_table(con, "zone_map", [("rowid", "BIGINT"), ("region_sk", "BIGINT")])
+            coords = con.cursor().execute("SELECT rowid, x, y FROM fact_kill")
+            while chunk := coords.fetchmany(8192):
+                _insert(con, "zone_map", [(rid, region_sk(x, y)) for rid, x, y in chunk], 2)
+            con.execute("UPDATE fact_kill SET region_sk = zone_map.region_sk "
+                        "FROM zone_map WHERE fact_kill.rowid = zone_map.rowid")
             duplicate = con.execute("SELECT count(*) FROM (SELECT match_id,frame_index,event_index "
                                     "FROM fact_kill GROUP BY ALL HAVING count(*) > 1)").fetchone()[0]
             duplicate_matches = con.execute("SELECT count(*)-count(DISTINCT match_id) FROM dim_match").fetchone()[0]
@@ -148,6 +180,7 @@ def build_release(store, site, *, run_id="rebuild", before_publish=None):
                 raise ValidationError("Browser joins changed the fact count")
             dataset_id = "v1-" + digest(json_bytes({"format": RELEASE_FORMAT_VERSION,
                                                    "schema": SCHEMA_VERSION,
+                                                   "zones": ZONE_DIGEST,
                                                    "inputs": inventory}))[:20]
             release = work / "release"
             release.mkdir()

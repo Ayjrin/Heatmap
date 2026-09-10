@@ -31,7 +31,8 @@ def main():
         status = response.status_code
         response.close()
         if status in (401, 403):
-            print("auth_required: refresh RIOT_API_KEY in .env.")
+            print("auth_required: Riot rejected this key. Development keys last 24 hours — put a fresh\n"
+                  "one from developer.riotgames.com in .env and re-run this script to store it in SSM.")
             return 3
         if status != 200:
             print(f"Key preflight unavailable: Riot HTTP {status}; no parameter was changed.")

@@ -14,7 +14,8 @@ from dataclasses import replace
 
 from .config import Config
 from .curated import (SCHEMA_VERSION, LocalObjects, S3Objects, ValidationError,
-                      ingest_match, json_bytes, match_prefix, read_complete)
+                      ingest_match, match_prefix, read_complete,
+                      settled_scope, settled_status)
 from .dataset import build_release
 from .extract.riot_client import AuthError, RiotAPIError, RiotClient
 from .extract.routing import Platform, Region
@@ -161,8 +162,7 @@ class Collection:
             self.patch(new_games=len(self.successes))
 
     def recover(self):
-        self.scope = hashlib.sha256(json_bytes(
-            {"patches": self.cfg.patches, "schema": SCHEMA_VERSION})).hexdigest()
+        self.scope = settled_scope(self.cfg.patches)
         self.successes = {r["match_id"] for r in self.state.scan(f"RUNMATCH#{self.run_id}#")}
         self.known = {r["match_id"]: r for r in self.state.scan("MATCH#")}
         self.scanned = {r["puuid"]: plain(r) for r in self.state.scan(self.player_key(""))}
@@ -196,12 +196,7 @@ class Collection:
     def settled(self, match_id):
         """Global dedupe. A match already committed under this schema, or already
         rejected under this patch scope, costs no Riot request in any later run."""
-        known = self.known.get(match_id) or {}
-        if known.get("status") == "complete" and known.get("schema_version") == SCHEMA_VERSION:
-            return "cached"
-        if known.get("status") == "rejected" and known.get("scope") == self.scope:
-            return "rejected"
-        return None
+        return settled_status(self.known.get(match_id), self.scope)
 
     def advance_watermarks(self):
         """Record how far each fully walked history has been scanned.

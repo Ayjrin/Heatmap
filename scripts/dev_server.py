@@ -68,7 +68,8 @@ class Controller:
         fields = ("run_id", "mode", "status", "stage", "new_games", "target", "started_at",
                   "updated_at", "published_version")
         public = {key: run[key] for key in fields if key in run} if run else None
-        errors = {"auth_required": "Add or refresh RIOT_API_KEY in .env, then start a new collection.",
+        errors = {"auth_required": ("Riot rejected the key. Development keys expire after 24 hours: "
+                                    "put a fresh one in .env, then start a new collection."),
                   "failed": "Collection stopped. Completed games were saved; check the local run log.",
                   "paused": "Collection paused. Completed games were saved."}
         if public and public.get("status") in errors and public.get("mode") != "rebuild":

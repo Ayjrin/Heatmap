@@ -44,6 +44,11 @@ class LocalState:
         for pk, item in records:
             self.put(pk, item)
 
+    def delete_many(self, pks):
+        with self._mutex:
+            for pk in pks:
+                self._path(pk).unlink(missing_ok=True)
+
     def scan(self, prefix):
         return [item for p in self.root.glob("*.json")
                 if (item := json.loads(p.read_text())).get("pk", "").startswith(prefix)]
@@ -113,6 +118,12 @@ class DynamoState:
         with self.table.batch_writer() as batch:
             for pk, item in records:
                 batch.put_item(Item=dict(item, pk=pk))
+
+    @_serialized
+    def delete_many(self, pks):
+        with self.table.batch_writer() as batch:
+            for pk in pks:
+                batch.delete_item(Key={"pk": pk})
 
     @_serialized
     def scan(self, prefix):

@@ -152,6 +152,29 @@ def match_prefix(match_id):
     return f"{CURATED_PREFIX}{match_id}/"
 
 
+def settled_scope(patches):
+    """Identity of the acceptance rules a rejection was decided under.
+
+    A rejection is only reusable while both the patch filter and the schema
+    hold; widening `patches` produces a new scope, so the game is re-examined.
+    """
+    return digest(json_bytes({"patches": list(patches), "schema": SCHEMA_VERSION}))
+
+
+def settled_status(known, scope):
+    """Return why a MATCH record already answers for a game, or None.
+
+    Global dedupe across every run: a game committed under this schema, or
+    rejected under this scope, must never cost another Riot request.
+    """
+    known = known or {}
+    if known.get("status") == "complete" and known.get("schema_version") == SCHEMA_VERSION:
+        return "cached"
+    if known.get("status") == "rejected" and known.get("scope") == scope:
+        return "rejected"
+    return None
+
+
 def normalize_context(match, match_id, *, source_kind, run_id):
     """Retain only dimensions, acceptance evidence, and reconciliation totals."""
     match_prefix(match_id)

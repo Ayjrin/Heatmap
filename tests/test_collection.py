@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 import make_fixture
+import dedupe_state
 import dev_server
 import proleague.pipeline as pipeline
 from proleague.config import Config, Paths
@@ -293,3 +294,63 @@ def test_local_api_preflight_and_concurrent_request_replay(tmp_path, monkeypatch
     process.poll.return_value = 0
     assert controller.start({"mode": "small", "requestId": second_id})["run"]["run_id"] == first_id
     assert spawn.call_count == 1
+
+
+def test_dedupe_collapses_run_scratch_into_a_backlog_a_new_run_starts_from(setup):
+    """Two interrupted runs leave overlapping discovery; one seed run replaces it."""
+    state, commits, run = setup
+    client = Histories(6)
+    first = run(client, "smoke")
+    assert first["new_games"] == 6
+
+    # Re-create the shape the deployed table is in: a second run that re-walked
+    # the same ladder, re-listed the same history, and left its own scratch.
+    stranded = str(uuid.uuid4())
+    for mid in client.ids + ["NA1_stranded"]:
+        state.put(f"DISCOVERY#{stranded}#{mid}", {"match_id": mid, "status": "pending"})
+    state.put(f"RUNPLAYER#{stranded}#test-player", {"puuid": "test-player", "done": False})
+    state.put(f"RUNMATCH#{stranded}#NA1_0", {"match_id": "NA1_0", "run_id": stranded})
+    state.put(f"LADDER#{stranded}#CHALLENGER", {"done": True})
+    known_before = {r["pk"] for r in state.scan("MATCH#")}
+
+    report, backlog, stale = dedupe_state.plan(state, [], "seed-run")
+    # Six games were discovered twice and are already committed, so the backlog
+    # narrows to the single ID no run ever fetched.
+    assert report["discovery_rows"] == 13 and report["discovery_distinct"] == 7
+    assert report["discovery_duplicate_rows"] == 6 and report["already_settled"] == 6
+    assert report["backlog_rows"] == 1 and set(backlog) == {"NA1_stranded"}
+
+    dedupe_state.apply(state, "seed-run", backlog, stale)
+    assert [r["pk"] for r in state.scan("DISCOVERY#")] == ["DISCOVERY#seed-run#NA1_stranded"]
+    assert state.scan("RUNPLAYER#") == state.scan("RUNMATCH#") == state.scan("LADDER#") == []
+    # Collected data is never in scope: the global dedupe index is untouched.
+    assert {r["pk"] for r in state.scan("MATCH#")} == known_before
+
+    calls = client.history_calls
+    client.played("NA1_stranded", 0)
+    seeded = run(client, "full", run_id="seed-run")
+    # The seeded run inherits the backlog and fetches only the stranded game;
+    # the six it already owns cost no request even though discovery re-lists them.
+    assert seeded["new_games"] == 1 and set(commits) == set(client.ids)
+    assert client.history_calls > calls
+
+
+def test_dedupe_is_idempotent_and_refuses_to_race_a_live_collection(setup, monkeypatch):
+    state, _, run = setup
+    monkeypatch.setattr(dedupe_state, "runtime", lambda cfg, local: (state, None, None, False))
+    run(Histories(3), "smoke")
+    state.put(f"DISCOVERY#{uuid.uuid4()}#NA1_stranded", {"match_id": "NA1_stranded", "status": "pending"})
+
+    report, backlog, stale = dedupe_state.plan(state, [], "seed-run")
+    dedupe_state.apply(state, "seed-run", backlog, stale)
+    again, backlog, stale = dedupe_state.plan(state, [], "seed-run")
+    # A second pass against an already seeded table finds nothing left to move.
+    assert again["backlog_rows"] == report["backlog_rows"] == 1
+    assert again["discovery_duplicate_rows"] == 0 and stale == []
+
+    # Rewriting takes the collector's own exclusive lease, so it can neither run
+    # beside a collection nor let one start against a half-rewritten table.
+    other = LocalState(state.root)
+    other.claim("someone-else")
+    assert dedupe_state.main(["--local", "--apply"]) == 2
+    other.release("someone-else")
