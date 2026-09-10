@@ -1,184 +1,156 @@
 # ProLeague Heatmap
 
-Where NA Challenger and Grandmaster players **win and lose fights** on Summoner's Rift —
-a filterable kill/death heatmap built from the Riot API.
+Explore where NA Challenger and Grandmaster solo-queue players get kills and die on Summoner’s Rift. Subject, opponent, and match-context filters drive four views: Deaths, Kills, Danger, and Opportunity.
 
-**This is not professional play.** Official esports data (LCK/LEC/LTA) is not exposed by the
-Riot API at all; only public-shard accounts are. What this analyses is **apex solo queue**.
-The name says "ProLeague"; the data says Challenger + Grandmaster ladder.
+The source is **apex solo queue**, not professional tournament play. A ladder player’s appearance seeds a match; it does not establish the rank of every participant at match time. Not endorsed by Riot Games.
 
-Not endorsed by Riot Games.
+**Live application:** [https://d2g2939h9izjje.cloudfront.net](https://d2g2939h9izjje.cloudfront.net)
 
----
+## Run locally
 
-## Quickstart — no API key needed
+Requires Python 3.12+, Node 22+, and a Riot development API key for collection.
 
-```bash
-make demo
+```sh
+make setup
+# Set RIOT_API_KEY in .env; .env.example shows the supported variables.
+make serve
 ```
 
-Generates synthetic Riot-shaped payloads, runs the full transform, verifies the output
-bundle, and serves the app at <http://localhost:8000>.
+Open http://localhost:8000. The application starts empty when no real release exists. `make demo` is an alias for this same real-data application and does not generate fixtures.
 
-Only the crawl needs a key. Everything downstream runs on fixtures, which is what makes the
-whole pipeline testable offline.
+The **Proof of Concept Buttons** section contains:
 
-```bash
-make test        # 27 pytest checks + the node bundle verifier
-make discover    # phases A+B only (~22 min, needs a key) — returns U
-make crawl       # the full crawl (needs a key)
-make build       # bronze -> silver -> browser bundle
+| Button | Collection behavior |
+| --- | --- |
+| Smoke Test — 50 games | Collect 50 new successfully processed, eligible unique games. |
+| Small Collection — 250 games | Collect 250 additional new games. |
+| Full Collection and Update | Refresh configured ladder histories and process the entire deduplicated universe. |
+
+Each new click creates a fresh quota. Cached, rejected, and failed games do not count toward it; eligible games with zero kill events do count. Concurrent clicks show the active run. If available histories cannot satisfy a quota, the UI reports the actual count and pauses instead of claiming completion.
+
+Equivalent commands are `make smoke`, `make small`, `make full`, and `make status`. Resume a paused run’s original quota with:
+
+```sh
+PYTHONPATH=src .venv/bin/python -m proleague.pipeline --resume RUN_UUID --local
 ```
 
-> **Environment note.** Every target exports `PYTHONDONTWRITEBYTECODE=1`. On this machine,
-> letting Python write `__pycache__` into the working tree stalls the process for minutes —
-> it blocks in `_Py_read` at 0% CPU. With the variable set, the same imports take ~60 ms.
-> Harmless everywhere else; every entry point here is short-lived.
+`config.yaml` selects routing, tiers, patch/time bounds, and the latest-history depth per player. Full refresh uses that configured window, not all games ever played. Smoke and Small discover incrementally, so collection starts without walking the entire ladder first. Their samples depend on discovered histories and are not a random sample of all ranked play.
 
-## The four layers
+The local key is loaded from `.env` without overriding an explicitly injected environment variable. Refreshing `.env` works for the next worker. If you exported an old key in your shell, update or unset that override too.
 
-One fact table, one scan, four renderings — all normalized relative to the rest of the map.
+## ETL and retained data
 
-| Layer | Value per cell | Reads as |
-|---|---|---|
-| **Deaths** | `D / ΣD` | Where this cohort dies |
-| **Kills** | `K / ΣK` | Where this cohort kills |
-| **Danger** | `D / (D + K)` | If a fight happens here, do they lose it? |
-| **Opportunity** | `1 − Danger` | If a fight happens here, do they win it? |
-
-Danger and Opportunity are exact complements — the same number, two palettes. Both ship
-because flipping between them is what makes contested ground pop.
-
-### The thing that makes the ratio work
-
-A `CHAMPION_KILL` is one death **and** one kill at the same coordinate. Count all ten
-players and `D == K` in every cell, so Danger is 0.5 everywhere and the map is uniformly
-grey. The ratio only carries signal when the filters select a **subset of players**.
-
-So the UI splits filters into **Subject** (whose kills and deaths we plot), **Opponent**
-(who they fought) and **Context** (the moment). The Subject is a player subset by
-construction, which designs the degeneracy out instead of warning about it. Switching layers
-doesn't change the filters — it changes which side of the row the Subject matches against:
-
-```
-Deaths  ->  Subject matches the VICTIM
-Kills   ->  Subject matches the KILLER
-Danger  ->  both, divided
+```mermaid
+flowchart LR
+  Riot[Riot ladder and Match V5 APIs] --> Worker[One Docker ETL worker]
+  Worker --> Context[Selected match context]
+  Worker --> Facts[Validated Parquet facts]
+  Worker --> State[Run and discovery checkpoints]
+  Context --> Build[Validate and build release]
+  Facts --> Build
+  Build --> Warehouse[Parquet facts and dimensions]
+  Build --> Release[Immutable browser release]
+  Release --> Pointer[Atomically replace current.json]
+  Pointer --> Browser[Canvas heatmap]
 ```
 
-*"Kills, by supports, from three named players, who weren't playing Pyke"* is one filter set;
-flipping the layer shows where those same players **died** instead. One definition, four maps.
+Full ladder, match, and timeline responses exist only in worker memory. The collector transforms each timeline before persistence and retains selected match dimensions, kill/death facts, reconciliation metadata, and retry checkpoints. ETL reduces retained data and makes the intended analytical schema explicit. The tradeoff is that features needing discarded fields require another API fetch; schema changes cannot always be reconstructed from stored data.
 
-This property is asserted in both test suites — `test_danger_degeneracy_with_no_subject_filter`
-and the node verifier's *"Danger is 0.5 in all N champion-kill cells"*.
+A canonical match is stored under `curated/v1/<matchId>/` as `context.json`, `facts.parquet`, validation metadata, and a `complete.json` marker written last. Timeline failures reuse saved context. Completed games are deduplicated by match ID; events use match ID plus source frame/event indices. Incomplete objects are ignored by publication.
 
-## What was cut, and why
+The builder checks input hashes, event identities, match counts, participant references, and join cardinality. It writes relational snapshots for `fact_kill`, `dim_match`, and `dim_participant`, then immutable browser assets. Release identity includes both input inventory and a format version. Conflicting immutable writes fail. Only after successful validation and upload does `data/current.json` point at the release.
 
-Cutting well is most of the design. Each of these was checked against real API behaviour.
+The browser checks Riot provenance in both the pointer and manifest. It retains a previously loaded valid release when a new download fails. Missing, incomplete, rejected, or zero-event data produces honest empty/error states. **Synthetic data is never served or deployed.** Invented test inputs live only in temporary test directories. The previous synthetic web bundle was moved into the ignored `data/quarantine/` directory.
 
-| Cut | Reason |
-|---|---|
-| **All ward / vision features** | `WARD_PLACED` and `WARD_KILL` carry no `position`. Riot has declined to add it since 2019 ([dev-rel #160](https://github.com/RiotGames/developer-relations/issues/160)) — deliberately, since published ward coordinates would show exactly where opponents are blind. Without position *and* without a reliable lifetime, "did the team have a ward" is a map-wide boolean that is true ~95% of the time after minute three. Dropped entirely rather than shipped as a proxy that looks like vision data and is not. |
-| **Exposure normalization** (`deaths / player-minutes`) | Superseded by Danger, which is self-normalizing from the same rows. Deletes the whole occupancy pipeline: no position-sample extraction, no fountain exclusion, no respawn modelling in the denominator, no inter-frame path interpolation. |
-| **Objective / building heatmaps** | Weak standalone. The events stay in bronze, so this is reversible without re-crawling. |
-| **Killing ability** | Narrow, and it widens every row for a column most queries never touch. |
+## Heatmap semantics
 
-## Architecture
+| View | Meaning |
+| --- | --- |
+| Deaths | Distribution of deaths whose victim matches the subject and killer matches the opponent filters. |
+| Kills | Distribution of kills whose killer matches the subject and victim matches the opponent filters. |
+| Danger | Smoothed death share: `(D + 5) / (D + K + 10)`. |
+| Opportunity | `1 - Danger`, using the same eligible events. |
 
-```
-league-v4 ladder ─┐
-                  ├─> bronze (gzipped raw JSON, never re-fetched)
-match-v5 ─────────┘        │
-                           ├─ transform ─> silver (Parquet)
-                           └─ build     ─> core.bin + extended.bin + sidecars
-                                              │
-                                        static site (Canvas 2D)
-```
+The ratio is descriptive, not a causal win probability. When filters include both sides of every champion kill, kills and deaths balance and the unsmoothed ratio is 0.5. Select a meaningful subject cohort to compare its outcomes.
 
-**ELT, not ETL, and the rate limit is the whole argument.** Re-extracting costs ~18 hours
-against a 3,000 req/hr ceiling; re-deriving from bronze costs minutes. Every schema change is
-a re-transform, never a re-crawl. The ETL counterfactual saves ~5 GB of S3 — about 12 cents a
-month — and costs the ability to ever change your mind.
+Mirroring uses each selected actor’s team independently. Coordinates normalize the asymmetric map bounds before red-side mirroring and flip Y once for the canvas. Team gold is blue minus red; lane gold is relative to the matching actor’s lane opponent. Missing values remain missing. Executions have a victim but no champion killer.
 
-**The two halves have opposite parallelism**, which is why they get different compute:
-the extract is a serial singleton (one key is one budget — ten workers give one worker's
-throughput plus a coordination problem); the transform is embarrassingly parallel per match.
+Zone totals come from exact selected events, independent of display grid resolution. Sparse ratio cells are suppressed, and thin slices use coarser grids. Player selections and shared links use stable PUUID identity, while names are display labels. Advanced columns load lazily before applying filters that need them.
 
-**The crawl target is not a chosen number.** 24 h of dev key allows 35,499 matches, but only
-~20–27k are discoverable from ~1,000 apex players, so the answer is "all of them" (~18.3 h).
-Phase B costs ~1,000 calls and 22 minutes and returns the exact figure *before* a single
-match call is spent — run `make discover` first.
+The browser receives aligned typed-array columns with JSON dictionaries instead of parsing full API payloads. Canonical Parquet keeps stable source identities; compact release-specific dictionary indices support the browser’s scan. Champion names and map artwork come from pinned Data Dragon version 16.17.1.
 
-### The wire format is not Arrow
+## AWS and Docker
 
-Every column is a fixed-width scalar with a sentinel null: no strings, no validity bitmaps,
-no nesting. Arrow's file format exists to carry exactly what we don't have, and Arrow-JS
-costs ~150 KB gzipped. Instead: one `.bin` of 8-byte-aligned column buffers plus a JSON
-manifest, consumed with zero copies —
+Terraform creates private data/site S3 buckets, CloudFront with origin access control, ECR, a Fargate task definition, DynamoDB run state, CloudWatch logs, an API Gateway HTTP API with a Lambda controller, and Athena/Glue tables. The initial worker is ARM64 with 0.5 vCPU and 2 GiB memory. It runs only for a manual collection; there is no scheduled collection.
 
-```js
-const col = new Int16Array(buffer, offset, rowCount);
-```
+The deployed API has no sign-in requirement, as intended for this proof of concept. It accepts only predefined modes, throttles requests, remembers request UUIDs, and reserves one active worker. ECS launch parameters and the idempotency token are durable before launch. An uncertain launch retains ownership while being reconciled. Task-stop events and status checks recover abandoned runs without releasing another run’s lock.
 
-`scripts/verify_bundle.mjs` asserts the Python writer and the JS reader agree, including
-that every offset aligns for its typed-array view.
+| Interface | Contract |
+| --- | --- |
+| `POST /api/runs` | `{ "mode": "smoke", "requestId": "UUID" }` |
+| `GET /api/status` | `{ "run": { "run_id", "mode", "status", "stage", "new_games", "target", ... }, "dataset": { "dataset_id", "count" } }` |
+| `data/current.json` | `{ "dataset_id", "base", "source_kind": "riot" }` |
 
-**54 bytes/row**, split into `core.bin` (everything the default view and headline filters
-need) and `extended.bin` (lazy-loaded on first use of an advanced filter). ~2 MB of timeline
-JSON collapses to ~28 rows ≈ 1.5 KB — about 1,400:1.
+The local development server implements the same application API. In AWS, Lambda validates the key before starting Fargate. Missing or rejected credentials return `auth_required` without a task launch. A worker encountering expiry checkpoints, exits, and requires a refreshed key plus a manual trigger. Run statuses are `starting`, `running`, `succeeded`, `paused`, `auth_required`, and `failed`.
 
-## Verified
+The Riot key is an SSM SecureString. Terraform handles only its name and ARN. `scripts/aws_key.py` validates the local value and uploads it without printing it; neither Terraform state, the image, the site, nor API responses contain the key.
 
-```
-27 passed in 0.11s        pytest
-all checks passed         node scripts/verify_bundle.mjs
+```sh
+# Optional local Docker workflow
+# On this Mac: Colima plus Docker Compose and buildx are installed.
+docker compose up --build preview
+# One standalone local collection:
+docker compose --profile collect run --rm collector
+
+# AWS deployment: profile default, region us-east-1
+.venv/bin/python scripts/aws_deploy.py bootstrap
+.venv/bin/python scripts/aws_deploy.py init
+.venv/bin/python scripts/aws_deploy.py plan
+.venv/bin/python scripts/aws_deploy.py apply
+.venv/bin/python scripts/aws_deploy.py image --image-tag build-UNIQUE_TAG
+.venv/bin/python scripts/aws_deploy.py apply --image-tag build-UNIQUE_TAG
+.venv/bin/python scripts/aws_key.py
+.venv/bin/python scripts/aws_deploy.py site
+.venv/bin/python scripts/aws_deploy.py status
 ```
 
-Covers: canonicalization is an involution and the naive raw-unit mirror drifts >100 units
-(the box is 14990 × 15100, not square); Y flips exactly once; the economy join is
-backward-only, so it can never read the frame that already contains the killer's kill gold;
-executions (`killerId == 0`) carry no killer block and never enter the Kills layer; both
-actor blocks are independently populated; `gameDuration` is handled in both unit
-conventions; every rejection rule fires; all values fit their columns.
+Deployment helpers retain Terraform’s interactive approval unless `--auto-approve` is supplied. ECR tags are immutable: use a new tag for changed code. Site upload uses an extension allowlist including ES modules and excludes local data, dotfiles, and symlinks. Dataset publication belongs exclusively to the worker.
 
-**Not verified:** anything requiring a live API key. The crawl path is written and
-key-ready but has never made a real request from this machine.
+Athena tables use injected `dataset_id` partition projection. Every query must select a release explicitly:
 
-## Known limitations
+```sql
+SELECT count(*) AS games, count(DISTINCT match_id) AS unique_games
+FROM proleague_heatmap.dim_match
+WHERE dataset_id = 'PUBLISHED_DATASET_ID';
 
-1. **Apex solo queue, not pro play.** Stated above, repeated here because it matters.
-2. **`seed_tier` means "a Challenger/GM player was in this match"** — not that all ten were.
-   Rank at match time does not exist in the API.
-3. **Frame-derived state is up to 60 s stale.** Gold and CS come from the last frame at or
-   before the event. Level does not — it is replayed from `LEVEL_UP` events, so it is exact.
-4. **Respawn timers and objective spawn timers are modelled**, not returned by the API. They
-   gate a count and a bitmask, not a measurement.
-5. **~0.9% of ranked games have a blank `teamPosition`.** Those rows are flagged
-   (`position_imputed`) and their lane-relative diffs nulled, not silently imputed.
-6. **PUUIDs are encrypted per API key** and do not join across keys. The warehouse is keyed
-   on `matchId` + `participantId`; only Riot IDs ship to the browser.
-7. **Region polygons are hand-authored** to the Rift's known layout, not surveyed from game
-   files. They label and roll up; nothing numeric depends on their exact edges.
-
-## Layout
-
-```
-PROJECT_PLAN.html          the full design doc — read this first
-config.yaml                unknown keys are a hard error
-src/proleague/
-  extract/                 routing types, rate limiter, client, bronze, state
-  transform/               geometry, regions, kills (the star transform)
-  serve/bundle.py          the browser wire format
-scripts/
-  crawl.py                 phases A-D, resumable
-  build_dataset.py         bronze -> silver -> gold
-  make_fixture.py          synthetic payloads, so no key is needed
-  verify_bundle.mjs        asserts the Python writer and JS reader agree
-web/                       index.html + app.js (engine) + ui.js (controls)
-tests/                     27 checks
-deploy.sh                  S3 + CloudFront, versioned immutable data paths
+SELECT match_id, frame_index, event_index, count(*) AS copies
+FROM proleague_heatmap.fact_kill
+WHERE dataset_id = 'PUBLISHED_DATASET_ID'
+GROUP BY match_id, frame_index, event_index
+HAVING count(*) > 1;
 ```
 
-Design rationale, the cost model (~$0.47 first month, $0.12/mo steady state) and the full
-Riot API reference are in **`PROJECT_PLAN.html`**.
-# Heatmap
+Costs depend on collection duration, request counts, stored releases, and query scans. Fargate and its public IPv4 address are used only while a worker runs; S3, ECR, logs, and other retained resources remain afterward. Logs retain 14 days. The Athena workgroup limits bytes scanned per query. Review `terraform -chdir=infra plan -destroy` before teardown; nonempty buckets/repositories require deliberate cleanup, and the bootstrap state bucket is protected against destruction.
+
+## Agent Toolkit for AWS
+
+The AWS CLI login was verified, the 23 default skills were installed, and the available-skill catalog was queried successfully using the [supplied setup instructions](https://raw.githubusercontent.com/aws/agent-toolkit-for-aws/refs/heads/main/setup-instructions/setup.md). The AWS MCP configuration is installed for Codex with `AWS_MCP_PROXY_PROFILES=default`; project guidance is in `AGENTS.md`, retaining Terraform and Docker as the project requirements.
+
+Restart Codex to load the new MCP connection. The current session uses the AWS CLI fallback. For another AWS account, run `aws login --profile NAME`, add the profile name to the space-separated `AWS_MCP_PROXY_PROFILES` setting, and restart the client. A configured MCP connection is distinct from an observed successful tool call; that connection has not yet been exercised in a restarted session.
+
+## Verification and limitations
+
+```sh
+make test     # Python integration/transform/controller tests and production JS module tests
+make verify   # Validate the currently published real browser release; absence is a failure
+```
+
+Current checks: **66 Python tests and 17 JavaScript tests passed**. Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
+
+The deployed Smoke Test completed 50 new games. The following Small Collection completed another 250 new games and atomically published release `v1-b97d0c7fed80ae1558ec` with 300 unique matches, 16,674 kill/death events, and 3,000 participant rows. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix contains 300 completion markers and no raw-named payloads. The production browser loader verified the decoded 900,568-byte core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the 300-game release. A headless Chrome check confirmed the real heatmap, dataset metadata, filters, top zones, breakdown, and completed collection status render on the live site.
+
+Tests cover 50 then 250 additional games, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, actor mirroring, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
+
+Remaining analytical limits: frame-derived economy and nearby-player state can be stale by one timeline frame; respawn and objective timing flags use models; hand-authored region boundaries are approximate. These derived attributes should not be treated as directly observed positions or exact timers. History depth and ladder membership constrain the sample, while blank roles retain unknown values rather than inferred lane comparisons.
+
+All application code, tests, infrastructure, and setup instructions live in this repository. The README is the take-home write-up; `PROJECT_PLAN.html` is a short navigation page for the delivered architecture.

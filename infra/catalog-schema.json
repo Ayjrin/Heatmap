@@ -1,0 +1,216 @@
+{
+  "fact_kill": [
+    {
+      "name": "match_id",
+      "type": "string"
+    },
+    {
+      "name": "frame_index",
+      "type": "bigint"
+    },
+    {
+      "name": "event_index",
+      "type": "bigint"
+    },
+    {
+      "name": "event_ms",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_pid",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_pid",
+      "type": "bigint"
+    },
+    {
+      "name": "x",
+      "type": "bigint"
+    },
+    {
+      "name": "y",
+      "type": "bigint"
+    },
+    {
+      "name": "second",
+      "type": "bigint"
+    },
+    {
+      "name": "region_sk",
+      "type": "bigint"
+    },
+    {
+      "name": "cause",
+      "type": "bigint"
+    },
+    {
+      "name": "assists",
+      "type": "bigint"
+    },
+    {
+      "name": "flags",
+      "type": "bigint"
+    },
+    {
+      "name": "alive_counts",
+      "type": "bigint"
+    },
+    {
+      "name": "objectives_up",
+      "type": "bigint"
+    },
+    {
+      "name": "since_objective",
+      "type": "bigint"
+    },
+    {
+      "name": "bounty",
+      "type": "bigint"
+    },
+    {
+      "name": "team_gold_diff",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_champ",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_role",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_level",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_gold_diff_lane",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_cs_diff_lane",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_isolation",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_enemies_near",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_ordinal",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_since_prev_death",
+      "type": "bigint"
+    },
+    {
+      "name": "victim_lane_opp_champ",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_champ",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_role",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_level",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_gold_diff_lane",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_cs_diff_lane",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_isolation",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_enemies_near",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_ordinal",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_since_prev_death",
+      "type": "bigint"
+    },
+    {
+      "name": "killer_lane_opp_champ",
+      "type": "bigint"
+    }
+  ],
+  "dim_match": [
+    {
+      "name": "match_id",
+      "type": "string"
+    },
+    {
+      "name": "patch",
+      "type": "string"
+    },
+    {
+      "name": "duration",
+      "type": "bigint"
+    },
+    {
+      "name": "blue_win",
+      "type": "boolean"
+    },
+    {
+      "name": "game_start_ms",
+      "type": "bigint"
+    },
+    {
+      "name": "collected_at",
+      "type": "bigint"
+    }
+  ],
+  "dim_participant": [
+    {
+      "name": "match_id",
+      "type": "string"
+    },
+    {
+      "name": "participant_id",
+      "type": "bigint"
+    },
+    {
+      "name": "puuid",
+      "type": "string"
+    },
+    {
+      "name": "display_name",
+      "type": "string"
+    },
+    {
+      "name": "champion_id",
+      "type": "bigint"
+    },
+    {
+      "name": "team_id",
+      "type": "bigint"
+    },
+    {
+      "name": "role",
+      "type": "bigint"
+    },
+    {
+      "name": "won",
+      "type": "boolean"
+    }
+  ]
+}
