@@ -264,6 +264,16 @@ test('discovery reports walked histories when an incremental refresh finds no ne
   assert.doesNotMatch(runDescription({ ...run, stage: 'collecting' }), /histories read/);
 });
 
+test('a rebuild is described by what it republishes, not by games it never collected', () => {
+  const run = { mode: 'rebuild', status: 'running', stage: 'rebuilding', new_games: 0, target: null };
+  // Every collection counter reads zero for a rebuild, so the default line is
+  // 'Collecting · 0 new games' for work that is neither collecting nor idle.
+  assert.match(runDescription(run), /Rebuilding the published dataset/);
+  assert.doesNotMatch(runDescription(run), /new games/);
+  assert.match(runDescription({ ...run, status: 'succeeded' }), /Published dataset rebuilt/);
+  assert.match(runDescription({ ...run, mode: 'full' }), /Collecting · 0 new games/);
+});
+
 test('production verifier reads only isolated test releases and rejects synthetic provenance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'heatmap-browser-test-'));
   try {

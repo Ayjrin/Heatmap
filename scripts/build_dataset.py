@@ -21,11 +21,28 @@ def main():
     state, store, site, _ = runtime(Config.load(), args.local)
     run_id = str(uuid.uuid4())
     state.claim(run_id)
+    # The claim excludes collection for as long as the rebuild runs, so it needs
+    # a run record to go with it. A lock owning no run leaves the status API
+    # nothing to report and the page no way to explain its disabled buttons.
+    started = int(time.time())
+    state.put("RUN#" + run_id, {"run_id": run_id, "mode": "rebuild", "status": "running",
+                                "stage": "rebuilding", "new_games": 0, "target": None,
+                                "started_at": started, "updated_at": started,
+                                "heartbeat_at": started})
+    state.put("LATEST", {"run_id": run_id})
     try:
         published = build_release(store, site, run_id=run_id,
                                   before_publish=lambda: state.heartbeat(run_id))
         state.put("PUBLISHED", dict(published, run_id=run_id, updated_at=int(time.time())))
+        state.update("RUN#" + run_id, status="succeeded", stage="complete",
+                     published_version=published["dataset_id"], updated_at=int(time.time()))
         print(json.dumps(published))
+    except BaseException:
+        # Ctrl-C included: a rebuild that stops without saying so reads as one
+        # still running, and the release it did not reach stays unexplained.
+        state.update("RUN#" + run_id, status="failed", stage="rebuild_failed",
+                     updated_at=int(time.time()))
+        raise
     finally:
         state.release(run_id)
     return 0

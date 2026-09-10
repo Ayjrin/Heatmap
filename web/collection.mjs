@@ -62,6 +62,15 @@ export class CollectionController {
 
 export function runDescription(run) {
   if (!run) return 'Ready to collect real ranked games.';
+  // A rebuild republishes games that were collected earlier, so every counter
+  // below it reads zero and every 'collecting' label misreads what it is doing.
+  if (run.mode === 'rebuild') {
+    const rebuilds = { starting: 'Preparing to rebuild the published dataset',
+      running: 'Rebuilding the published dataset from every collected game',
+      succeeded: 'Published dataset rebuilt', failed: 'Dataset rebuild failed',
+      paused: 'Dataset rebuild stopped' };
+    return rebuilds[run.status] || 'Dataset rebuild status';
+  }
   const n = Math.max(0, Number(run.new_games) || 0).toLocaleString();
   const target = run.target == null ? '' : ` of ${Number(run.target).toLocaleString()}`;
   const progress = `${n}${target} new games`;

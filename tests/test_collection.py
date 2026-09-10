@@ -3,6 +3,7 @@ import copy
 import json
 import random
 import sys
+import threading
 import uuid
 from pathlib import Path
 from unittest.mock import Mock
@@ -72,9 +73,10 @@ def setup(tmp_path, monkeypatch):
         before_publish()
         return {"dataset_id": "test-release", "count": len(commits), "rows": 0}
 
-    def run(client, mode, run_id=None, resume=False):
+    def run(client, mode, run_id=None, resume=False, stop=None):
         return pipeline.Collection(cfg, state, store, site, client=client, mode=mode,
-            run_id=run_id or str(uuid.uuid4()), resume=resume, publisher=publish).execute()
+            run_id=run_id or str(uuid.uuid4()), resume=resume, stop=stop,
+            publisher=publish).execute()
 
     return state, commits, run
 
@@ -174,6 +176,63 @@ def test_expiration_midrun_preserves_quota_on_manual_resume(setup, monkeypatch):
     assert first["status"] == "auth_required" and first["new_games"] == 4
     resumed = run(client, "smoke", first["run_id"], resume=True)
     assert resumed["status"] == "succeeded" and len(commits) == resumed["new_games"] == 50
+
+
+def test_interrupted_run_publishes_the_games_it_collected(setup, monkeypatch):
+    state, commits, run = setup
+    stop = threading.Event()
+    original = pipeline.ingest_match
+
+    def interrupt(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if len(commits) == 3:
+            stop.set()
+        return result
+
+    monkeypatch.setattr(pipeline, "ingest_match", interrupt)
+    result = run(Histories(60), "smoke", stop=stop)
+    # A stop signal ends the collecting, not the games. They are already durable
+    # under the curated prefix and publication is the only step that puts them
+    # in front of anyone, so an interrupt that skipped it would strand the lot.
+    assert (result["status"], result["stage"]) == ("paused", "interrupted")
+    assert (state.get("PUBLISHED")["count"], result["published_version"]) == (3, "test-release")
+    assert state.get("ACTIVE") is None
+
+
+def test_expired_key_publishes_the_games_already_collected(setup, monkeypatch):
+    state, commits, run = setup
+    original = pipeline.ingest_match
+
+    def expire(*args, **kwargs):
+        if len(commits) == 4:
+            raise AuthError("expired")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "ingest_match", expire)
+    result = run(Histories(70), "smoke")
+    # A development key dies 24 hours after it is issued, mid-run as often as
+    # not. The games collected before that are unaffected by it.
+    assert (result["status"], result["new_games"]) == ("auth_required", 4)
+    assert (state.get("PUBLISHED")["count"], result["published_version"]) == (4, "test-release")
+
+
+def test_lost_ownership_publishes_nothing_and_leaves_the_new_owner_alone(setup, monkeypatch):
+    state, commits, run = setup
+    original = pipeline.ingest_match
+
+    def steal(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if len(commits) == 2:
+            state.put("ACTIVE", {"run_id": "someone-else"})
+        return result
+
+    monkeypatch.setattr(pipeline, "ingest_match", steal)
+    # Salvage must not become a way for an evicted run to overwrite the release
+    # or the status record that its successor now owns.
+    with pytest.raises(OwnershipError):
+        run(Histories(60), "smoke")
+    assert state.get("PUBLISHED") is None
+    assert state.get("ACTIVE")["run_id"] == "someone-else"
 
 
 def test_exclusive_local_worker_ownership(tmp_path):

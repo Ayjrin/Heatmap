@@ -127,14 +127,19 @@ class Collection:
         self.state.update("RUN#" + self.run_id, **fields)
         self.run.update(fields)
 
-    def check(self):
+    def check_ownership(self):
         if self.ownership_lost.is_set():
             raise OwnershipError("Collection ownership was lost")
-        if self.stop.is_set():
-            raise Paused("Collection interrupted")
         active = self.state.get("ACTIVE")
         if not active or active.get("run_id") != self.run_id:
             raise OwnershipError("Collection ownership was lost")
+
+    def check(self):
+        # Ownership first: when a run has lost the lock and been interrupted,
+        # the lock is the one that must not be written over.
+        self.check_ownership()
+        if self.stop.is_set():
+            raise Paused("Collection interrupted")
 
     def heartbeat(self):
         while not self.heartbeat_stop.wait(self.heartbeat_seconds):
@@ -348,6 +353,38 @@ class Collection:
         if self.mode == "full":
             self.process(list(self.candidates.values()))
 
+    def publish(self, guard):
+        """Build and publish a release covering every curated game we can see.
+
+        A release is the cumulative union of the curated prefix, not this run's
+        haul, so this is worth doing whenever the run added anything at all.
+        """
+        if not any(r.get("status") == "complete" for r in self.known.values()):
+            return
+        self.patch(stage="publishing")
+        published = self.publisher(self.store, self.site, run_id=self.run_id, before_publish=guard)
+        self.state.put("PUBLISHED", dict(published, run_id=self.run_id, updated_at=now()))
+        self.patch(published_version=published["dataset_id"])
+
+    def salvage(self, status, stage):
+        """Publish before recording a terminal status that ends collection early.
+
+        An expired key or a stop signal ends the collecting, not the games: they
+        are already durable under the curated prefix, and publication is the
+        only step that makes them visible. Skipping it strands every game the
+        run collected until someone rebuilds by hand. The publish itself is
+        atomic -- immutable objects first, pointer last -- so an attempt that is
+        killed partway leaves orphaned objects and the previous release intact.
+        """
+        try:
+            self.publish(self.check_ownership)
+        except OwnershipError:
+            raise
+        except Exception as exc:
+            log.error("%s", json.dumps({"event": "salvage_publish_failed", "run_id": self.run_id,
+                      "status": status, "type": type(exc).__name__}))
+        self.patch(status=status, stage=stage)
+
     def execute(self):
         saved = self.state.get("RUN#" + self.run_id)
         if saved and saved.get("status") == "succeeded":
@@ -378,11 +415,7 @@ class Collection:
             self.collect()
             self.check()
             self.advance_watermarks()
-            if any(r.get("status") == "complete" for r in self.known.values()):
-                self.patch(stage="publishing")
-                published = self.publisher(self.store, self.site, run_id=self.run_id, before_publish=self.check)
-                self.state.put("PUBLISHED", dict(published, run_id=self.run_id, updated_at=now()))
-                self.patch(published_version=published["dataset_id"])
+            self.publish(self.check)
             errors = sum(r["status"] == "error" for r in self.candidates.values())
             if self.run["target"] is not None and not self.target_reached():
                 self.patch(status="paused", stage="retry_required" if errors else "exhausted")
@@ -391,9 +424,9 @@ class Collection:
             else:
                 self.patch(status="succeeded", stage="complete")
         except AuthError:
-            self.patch(status="auth_required", stage="auth_required")
+            self.salvage("auth_required", "auth_required")
         except Paused:
-            self.patch(status="paused", stage="interrupted")
+            self.salvage("paused", "interrupted")
         except OwnershipError:
             # Another owner can now control state and publication; do not overwrite it.
             raise

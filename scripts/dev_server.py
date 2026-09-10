@@ -59,15 +59,19 @@ class Controller:
 
     def snapshot(self, run=None):
         if run is None:
-            pointer = self.state.get("ACTIVE") or self.state.get("LATEST")
-            run = self.state.get("RUN#" + pointer["run_id"]) if pointer else None
+            # A claim is durable before its run record, so ACTIVE can name a
+            # record that does not exist yet; report the previous run instead.
+            for key in ("ACTIVE", "LATEST"):
+                pointer = self.state.get(key)
+                if pointer and (run := self.state.get("RUN#" + pointer["run_id"])):
+                    break
         fields = ("run_id", "mode", "status", "stage", "new_games", "target", "started_at",
                   "updated_at", "published_version")
         public = {key: run[key] for key in fields if key in run} if run else None
         errors = {"auth_required": "Add or refresh RIOT_API_KEY in .env, then start a new collection.",
                   "failed": "Collection stopped. Completed games were saved; check the local run log.",
                   "paused": "Collection paused. Completed games were saved."}
-        if public and public.get("status") in errors:
+        if public and public.get("status") in errors and public.get("mode") != "rebuild":
             public["error"] = errors[public["status"]]
         published = self.state.get("PUBLISHED")
         dataset = {key: published[key] for key in ("dataset_id", "count") if key in published} if published else None
