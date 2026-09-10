@@ -1,8 +1,8 @@
 # ProLeague Heatmap
 
-Explore where NA Challenger and Grandmaster solo-queue players get kills and die on Summoner’s Rift. Subject, opponent, and match-context filters drive four views: Deaths, Kills, Danger, and Opportunity.
+Explore where NA Challenger and Grandmaster solo queue players get kills and die on Summoner’s Rift. Subject, opponent, and match-context filters drive four views: Deaths, Kills, Danger, and Opportunity.
 
-The source is **apex solo queue**, not professional tournament play. A ladder player’s appearance seeds a match; it does not establish the rank of every participant at match time. Not endorsed by Riot Games.
+The source is **solo queue**, not professional tournament play. A ladder player’s appearance seeds a match; it does not establish the rank of every participant at match time. Not endorsed by Riot Games.
 
 **Live application:** [https://d2g2939h9izjje.cloudfront.net](https://d2g2939h9izjje.cloudfront.net)
 
@@ -18,15 +18,11 @@ make serve
 
 Open http://localhost:8000. The application starts empty when no real release exists. `make demo` is an alias for this same real-data application and does not generate fixtures.
 
-The **Proof of Concept Buttons** section contains:
+The **Game data** section has one button, **Update game data**. It refreshes the configured ladder histories and processes the entire deduplicated universe, so it has no target count: it reads every ladder player’s recent history first, then fetches the games it has not already collected. The status line reports discovered candidates during that first stage, because new games necessarily stay at zero until discovery finishes.
 
-| Button | Collection behavior |
-| --- | --- |
-| Smoke Test — 50 games | Collect 50 new successfully processed, eligible unique games. |
-| Small Collection — 250 games | Collect 250 additional new games. |
-| Full Collection and Update | Refresh configured ladder histories and process the entire deduplicated universe. |
+Cached, rejected, and failed games do not count as new; eligible games with zero kill events do count. Concurrent clicks show the active run.
 
-Each new click creates a fresh quota. Cached, rejected, and failed games do not count toward it; eligible games with zero kill events do count. Concurrent clicks show the active run. If available histories cannot satisfy a quota, the UI reports the actual count and pauses instead of claiming completion.
+The bounded `smoke` (50 games) and `small` (250 games) modes still exist behind the API and the CLI for quick verification; they are simply no longer exposed as buttons. A bounded run that cannot be satisfied from available histories reports the actual count and pauses instead of claiming completion.
 
 Equivalent commands are `make smoke`, `make small`, `make full`, and `make status`. Resume a paused run’s original quota with:
 
@@ -34,7 +30,7 @@ Equivalent commands are `make smoke`, `make small`, `make full`, and `make statu
 PYTHONPATH=src .venv/bin/python -m proleague.pipeline --resume RUN_UUID --local
 ```
 
-`config.yaml` selects routing, tiers, patch/time bounds, and the latest-history depth per player. Full refresh uses that configured window, not all games ever played. Smoke and Small discover incrementally, so collection starts without walking the entire ladder first. Their samples depend on discovered histories and are not a random sample of all ranked play.
+`config.yaml` selects routing, tiers, patch/time bounds, and the latest-history depth per player. Full refresh uses that configured window, not all games ever played. The bounded `smoke` and `small` modes discover incrementally, so collection starts without walking the entire ladder first. Every sample depends on discovered histories and is not a random sample of all ranked play.
 
 The local key is loaded from `.env` without overriding an explicitly injected environment variable. Refreshing `.env` works for the next worker. If you exported an old key in your shell, update or unset that override too.
 
@@ -71,11 +67,13 @@ The browser checks Riot provenance in both the pointer and manifest. It retains 
 | Danger | Smoothed death share: `(D + 5) / (D + K + 10)`. |
 | Opportunity | `1 - Danger`, using the same eligible events. |
 
+Danger and Opportunity are diverging layers: 0.5 stays pinned to the ramp’s midpoint, and the span is stretched to the range actually present, because a real danger ratio rarely leaves 0.4–0.6 and the full 0–1 ramp would render it as one flat grey. The legend prints the resulting endpoints.
+
 The ratio is descriptive, not a causal win probability. When filters include both sides of every champion kill, kills and deaths balance and the unsmoothed ratio is 0.5. Select a meaningful subject cohort to compare its outcomes.
 
-Mirroring uses each selected actor’s team independently. Coordinates normalize the asymmetric map bounds before red-side mirroring and flip Y once for the canvas. Team gold is blue minus red; lane gold is relative to the matching actor’s lane opponent. Missing values remain missing. Executions have a victim but no champion killer.
+Events are binned where they happened, on the side they happened. Summoner’s Rift is rotationally similar but not symmetric — lane geometry, camps, and brush differ between sides — so blue and red are never folded together. Coordinates normalize the asymmetric map bounds and flip Y once for the canvas. Team gold is blue minus red; lane gold is relative to the matching actor’s lane opponent. Missing values remain missing. Executions have a victim but no champion killer.
 
-Zone totals come from exact selected events, independent of display grid resolution. Sparse ratio cells are suppressed, and thin slices use coarser grids. Player selections and shared links use stable PUUID identity, while names are display labels. Advanced columns load lazily before applying filters that need them.
+Zone totals come from exact selected events, independent of display grid resolution. Sparse ratio cells are suppressed, and thin slices use coarser grids. **Smooth** applies a separable Gaussian to the death and kill grids before anything is derived from them, so Danger and Opportunity are formed from the smoothed counts rather than by blurring a ratio, which would weight a cell of one event like a cell of fifty. Player selections and shared links use stable PUUID identity, while names are display labels: the in-game Riot ID name leads and its `#tagline` trails it dimmed, kept because a small share of ladder names collide. Advanced columns load lazily before applying filters that need them.
 
 The browser receives aligned typed-array columns with JSON dictionaries instead of parsing full API payloads. Canonical Parquet keeps stable source identities; compact release-specific dictionary indices support the browser’s scan. Champion names and map artwork come from pinned Data Dragon version 16.17.1.
 
@@ -147,9 +145,9 @@ make verify   # Validate the currently published real browser release; absence i
 
 Current checks: **66 Python tests and 17 JavaScript tests passed**. Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
 
-The deployed Smoke Test completed 50 new games. The following Small Collection completed another 250 new games and atomically published release `v1-b97d0c7fed80ae1558ec` with 300 unique matches, 16,674 kill/death events, and 3,000 participant rows. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix contains 300 completion markers and no raw-named payloads. The production browser loader verified the decoded 900,568-byte core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the 300-game release. A headless Chrome check confirmed the real heatmap, dataset metadata, filters, top zones, breakdown, and completed collection status render on the live site.
+The deployed Smoke Test completed 50 new games. The following Small Collection completed another 250 new games and atomically published release `v1-b97d0c7fed80ae1558ec` with 300 unique matches, 16,674 kill/death events, and 3,000 participant rows. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix contains 300 completion markers and no raw-named payloads. The production browser loader verified the decoded 900,568-byte core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the 300-game release. The 300 is exactly 50 + 250 and is not a cap anywhere in the code: a release is the cumulative union of every game collected so far, and at that point only those two bounded runs had finished. **Update game data** is what grows it past 300. A headless Chrome check confirmed the real heatmap, dataset metadata, filters, top zones, breakdown, and completed collection status render on the live site.
 
-Tests cover 50 then 250 additional games, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, actor mirroring, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
+Tests cover 50 then 250 additional games, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, side-independent binning, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
 
 Remaining analytical limits: frame-derived economy and nearby-player state can be stale by one timeline frame; respawn and objective timing flags use models; hand-authored region boundaries are approximate. These derived attributes should not be treated as directly observed positions or exact timers. History depth and ladder membership constrain the sample, while blank roles retain unknown values rather than inferred lane comparisons.
 

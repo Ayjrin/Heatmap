@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ProLeague Heatmap — apex solo queue kill/death maps</title>
+<title>ProLeague Heatmap — solo queue kill/death maps</title>
 <meta name="description" content="Where NA Challenger and Grandmaster players win and lose fights on Summoner's Rift.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
@@ -13,17 +13,15 @@
 <aside id="rail">
   <header>
     <h1>ProLeague Heatmap</h1>
-    <p class="sub">NA Challenger + Grandmaster · apex solo queue</p>
+    <p class="sub">NA Challenger + Grandmaster · solo queue</p>
   </header>
 
   <section class="grp poc" aria-labelledby="pocTitle">
-    <h2 id="pocTitle">Proof of Concept Buttons</h2>
+    <h2 id="pocTitle">Game data</h2>
     <div class="pocButtons">
-      <button data-mode="smoke">Smoke Test — 50 games</button>
-      <button data-mode="small">Small Collection — 250 games</button>
-      <button data-mode="full">Full Collection and Update</button>
+      <button data-mode="full" title="Refresh the ladder and collect every new game discoverable from it. Adds only games not already collected; the current map stays usable while it runs.">Update game data</button>
     </div>
-    <p class="pocNote">Each collection adds new, unique games. Previous results stay available while it runs.</p>
+    <p class="pocNote">Each update adds new, unique games. Previous results stay available while it runs.</p>
     <p id="runStatus" role="status" aria-live="polite">Checking collection status…</p>
     <progress id="runProgress" hidden aria-label="New games collected"></progress>
     <p id="runTime" class="pocNote"></p>
@@ -66,7 +64,7 @@
 
   <footer>
     <button class="lnk" id="resetBtn" data-controls>Reset all filters</button>
-    <p class="tos">Not endorsed by Riot Games. Apex solo queue — not professional play.</p>
+    <p class="tos">Not endorsed by Riot Games. Solo queue — not professional play.</p>
   </footer>
 </aside>
 
@@ -126,16 +124,15 @@
     </div>
 
     <div class="controls" data-controls>
-      <div class="seg" id="gridSeg">
-        <button data-g="auto" class="on">auto</button>
-        <button data-g="128">128²</button><button data-g="64">64²</button><button data-g="32">32²</button>
+      <div class="seg" id="gridSeg" role="group" aria-label="Grid resolution">
+        <button data-g="auto" class="on" title="Grid resolution: pick the finest grid the current sample can support. Coarsens automatically when a filter leaves too few events per cell.">auto</button>
+        <button data-g="128" title="Grid resolution: 16,384 cells, about 117 game units each — finest detail, needs the most events.">128²</button><button data-g="64" title="Grid resolution: 4,096 cells, about 234 game units each — a middle ground for smaller samples.">64²</button><button data-g="32" title="Grid resolution: 1,024 cells, about 468 game units each — coarsest, most forgiving on thin slices.">32²</button>
       </div>
-      <div class="seg" id="scaleSeg">
-        <button data-s="lin" class="on">linear</button>
-        <button data-s="sqrt">√</button><button data-s="log">log</button>
+      <div class="seg" id="scaleSeg" role="group" aria-label="Color scale">
+        <button data-s="lin" class="on" title="Color scale: proportional to the value, so only the busiest cells stand out. Deaths and Kills only — the ratio layers use a fixed 0–1 scale.">linear</button>
+        <button data-s="sqrt" title="Color scale: square root — lifts quiet cells so low-traffic areas stay readable next to hotspots. Deaths and Kills only.">√</button><button data-s="log" title="Color scale: logarithmic — the strongest lift for quiet cells, best when one or two cells dominate. Deaths and Kills only.">log</button>
       </div>
-      <label class="chk"><input type="checkbox" id="mirrorChk"><span>Mirror sides</span></label>
-      <label class="chk"><input type="checkbox" id="smoothChk" checked><span>Smooth</span></label>
+      <label class="chk" title="Blur the map with a Gaussian so nearby cells reinforce each other, trading exact cell edges for a readable shape. Counts are blurred before any ratio is formed."><input type="checkbox" id="smoothChk" checked><span>Smooth</span></label>
     </div>
   </div>
 

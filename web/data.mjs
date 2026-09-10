@@ -66,8 +66,18 @@ export function loadExtended(fetcher = fetch) {
   return holder.promise;
 }
 
+/* Riot IDs are stored whole ("Sneaky#NA1") because only the pair is unique.
+ * The game name alone is what a player is called in game and what anyone
+ * actually types, so it leads every label and the tagline trails it, kept
+ * because ~1% of ladder names collide and the tag is the only tiebreak. */
 export const playerLabel = player => typeof player === 'string' ? player
   : player?.name || player?.label || player?.riot_id || player?.id || 'Unknown player';
+const splitRiotId = player => {
+  const full = playerLabel(player), hash = full.lastIndexOf('#');
+  return hash > 0 ? [full.slice(0, hash), full.slice(hash)] : [full, ''];
+};
+export const playerName = player => splitRiotId(player)[0];
+export const playerTag = player => splitRiotId(player)[1];
 
 /* Surrogate indices may change between releases; retain selections by identity. */
 export function reconcileFilters(previous, next, state = S) {
@@ -139,7 +149,7 @@ export async function loadBundle(fetcher = fetch) {
   if (S.lanegold) { Object.assign(next.cols, await extendedFor(next, fetcher)); next.extendedLoaded = true; }
   buildDerived(next);
   reconcileFilters(D, next);
-  Object.assign(D, next, { lastResult: null });
+  Object.assign(D, next, { lastResult: null, lastShown: null });
   extendedPromise = null;
   return true;
 }

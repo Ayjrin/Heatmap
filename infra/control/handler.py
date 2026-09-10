@@ -22,8 +22,11 @@ from botocore.exceptions import ClientError
 
 MODES = {"smoke": 50, "small": 250, "full": None}
 TERMINAL = {"auth_required", "failed", "succeeded", "paused"}
+# discovered_games is the only sign of life during a full run's discovery
+# stage, which reads every ladder player's history before fetching one game.
+# Without it the page shows "0 new games" for half an hour and looks stuck.
 PUBLIC_FIELDS = ("run_id", "mode", "status", "stage", "new_games", "target",
-                 "started_at", "updated_at", "published_version")
+                 "started_at", "updated_at", "published_version", "discovered_games")
 ERRORS = {
     "auth_required": "The Riot API key needs to be added or refreshed before another manual run.",
     "failed": "Collection stopped. Completed games were saved; check the private run logs.",
