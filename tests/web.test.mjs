@@ -265,6 +265,18 @@ test('the run description names its stage and never quotes a game or kill count'
   assert.equal(runDescription(null), 'Ready to collect ranked games.');
 });
 
+test('a rebuild is described by what it republishes, not by games it never collected', () => {
+  const run = { mode: 'rebuild', status: 'running', stage: 'rebuilding', new_games: 0, target: null };
+  // A rebuild collects nothing, so the collection labels read it as 'Collecting'
+  // for work that is neither collecting nor idle.
+  assert.match(runDescription(run), /Rebuilding the published dataset/);
+  assert.match(runDescription({ ...run, status: 'succeeded' }), /Published dataset rebuilt/);
+  assert.match(runDescription({ ...run, status: 'failed' }), /Dataset rebuild failed/);
+  // Only the mode switches the wording; a real collection still reads as one.
+  assert.equal(runDescription({ ...run, mode: 'full', stage: 'discovering' }),
+    'Collecting · discovering');
+});
+
 test('production verifier reads only isolated test releases and rejects synthetic provenance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'heatmap-browser-test-'));
   try {

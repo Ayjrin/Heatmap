@@ -22,6 +22,10 @@
       <button data-mode="full" title="Refresh the ladder and collect every new game discoverable from it. Adds only games not already collected; the current map stays usable while it runs.">Update game data</button>
     </div>
     <p class="pocNote">Each update adds new, unique games. Previous results stay available while it runs.</p>
+    <p class="pocNote">The Riot development key this uses expires every 24 hours. Each click checks the stored key
+      against Riot first and refuses to launch a run on a dead one. To restore it: get a new key at
+      developer.riotgames.com, put it in <code>.env</code>, and run <code>scripts/aws_key.py</code> to store it in the
+      AWS SSM parameter the collector reads.</p>
     <p id="runStatus" role="status" aria-live="polite">Checking collection status…</p>
     <progress id="runProgress" hidden aria-label="Collection progress"></progress>
     <p id="runTime" class="pocNote"></p>

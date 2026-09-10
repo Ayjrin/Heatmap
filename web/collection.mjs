@@ -62,6 +62,15 @@ export class CollectionController {
 
 export function runDescription(run) {
   if (!run) return 'Ready to collect ranked games.';
+  // A rebuild republishes games collected earlier, so 'Collecting' misreads it
+  // and every count it would report reads zero.
+  if (run.mode === 'rebuild') {
+    const rebuilds = { starting: 'Preparing to rebuild the published dataset',
+      running: 'Rebuilding the published dataset from every collected game',
+      succeeded: 'Published dataset rebuilt', failed: 'Dataset rebuild failed',
+      paused: 'Dataset rebuild stopped' };
+    return rebuilds[run.status] || 'Dataset rebuild status';
+  }
   const labels = { starting: 'Starting', running: 'Collecting', auth_required: 'Riot key needs updating',
     failed: 'Collection failed', succeeded: 'Collection complete', paused: 'Collection paused' };
   // The stage names the work in flight — an update reads every ladder history

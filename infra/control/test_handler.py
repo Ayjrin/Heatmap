@@ -216,6 +216,35 @@ def test_acknowledged_task_is_not_relaunched_after_token_expiry(app):
     assert app.ecs.run_task.call_count == 1
 
 
+def test_lock_without_a_run_record_reports_the_previous_run(app):
+    finished = start(app)["run"]
+    app.store.stopped(finished["run_id"])
+    # A claim is durable before its run record, and a rebuild owns the lock
+    # without ever being a run, so ACTIVE can name a record that does not
+    # exist. Neither case may take the whole endpoint down, and neither is
+    # reconcilable here: releasing the lock would evict its rightful owner.
+    app.store.rows["ACTIVE"] = {"run_id": str(uuid.uuid4())}
+    result = app.status()
+    assert result["run"]["run_id"] == finished["run_id"]
+    assert app.store.get("ACTIVE") is not None
+
+
+def test_click_during_a_rebuild_reports_state_without_launching(app):
+    app.store.rows["ACTIVE"] = {"run_id": str(uuid.uuid4())}
+    result = start(app)
+    # The lock is held by work the API cannot describe, so the click attaches to
+    # it and reports what is known rather than failing or racing a collector.
+    assert result["run"] is None
+    app.ecs.run_task.assert_not_called()
+
+
+def test_rebuild_is_not_described_with_collection_wording(app):
+    app.store.rows["LATEST"] = {"run_id": "rebuild"}
+    app.store.rows["RUN#rebuild"] = {"run_id": "rebuild", "mode": "rebuild", "status": "failed"}
+    # "Completed games were saved" answers a question a rebuild never asked.
+    assert "error" not in app.status()["run"]
+
+
 def test_public_errors_never_include_worker_details(app):
     run_id = start(app)["run"]["run_id"]
     app.store.rows["RUN#" + run_id].update(status="failed", error="secret-key / private stacktrace")

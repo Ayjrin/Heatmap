@@ -134,17 +134,46 @@ def _blue_nexus_turret():
 # ---------------------------------------------------------- §11.2 regions
 def test_landmarks_land_in_named_zones():
     from proleague.transform.geometry import from_unit
-    for u, v, expect in [(0.24, 0.68, "Baron"), (0.68, 0.24, "Dragon"),
-                         (0.05, 0.05, "Blue Base"), (0.95, 0.95, "Red Base")]:
+    for u, v, expect in [(0.33, 0.70, "Baron"), (0.67, 0.30, "Dragon"),
+                         (0.05, 0.05, "Blue Base"), (0.95, 0.95, "Red Base"),
+                         (0.06, 0.58, "Blue Top Lane"), (0.58, 0.06, "Blue Bot Lane"),
+                         (0.94, 0.42, "Red Bot Lane"), (0.42, 0.94, "Red Top Lane"),
+                         (0.30, 0.30, "Blue Mid Lane"), (0.70, 0.70, "Red Mid Lane"),
+                         (0.50, 0.50, "Mid River"), (0.20, 0.78, "Top River"),
+                         (0.78, 0.20, "Bot River")]:
         name = region_name(region_sk(*from_unit(u, v)))
         assert expect.split()[0] in name, f"({u},{v}) -> {name}, expected {expect}"
 
 
+def test_turrets_land_in_their_own_lane():
+    """The turret table is the one surveyed thing on the map, so it is the
+    check that the lane strips are actually over the lanes."""
+    from proleague.transform.geometry import TURRETS_BLUE_UNIT, from_unit
+    expected = ["Blue Top Lane"] * 3 + ["Blue Base"] + ["Blue Mid Lane"] * 2 \
+        + ["Blue Bot Lane"] * 3 + ["Blue Base"] * 2   # the mid inhib sits inside the base
+    for (u, v), want in zip(TURRETS_BLUE_UNIT, expected):
+        name = region_name(region_sk(*from_unit(u, v)))
+        assert name == want, f"turret ({u},{v}) -> {name}, expected {want}"
+
+
+def test_broad_zones_tile_the_map():
+    """Every in-bounds point gets a zone: the base, lanes, jungle quadrants and
+    river cover the square between them, so nothing is left over."""
+    from proleague.transform.geometry import from_unit
+    step = 1 / 257          # deliberately not aligned to the zone boundaries
+    misses = [(u, v)
+              for u in (i * step for i in range(1, 257))
+              for v in (j * step for j in range(1, 257))
+              if region_sk(*from_unit(u, v)) == UNLABELLED_SK]
+    assert not misses, f"{len(misses)} unlabelled points, e.g. {misses[:5]}"
+
+
 def test_unlabelled_is_distinct_not_nearest():
-    """Points outside every polygon keep their own label. Forcing them into a
-    neighbour would put wall deaths in whichever camp is nearest."""
+    """Coordinates off the map box keep their own label. Forcing them into a
+    neighbour would put them in whichever zone is nearest."""
     assert region_name(UNLABELLED_SK) == "Unlabelled"
     assert UNLABELLED_SK == len(REGION_NAMES) - 1
+    assert region_name(region_sk(-9000.0, -9000.0)) == "Unlabelled"
 
 
 def test_region_ids_fit_in_uint8():
@@ -389,3 +418,101 @@ def test_io_failure_is_not_a_rejection(tmp_path):
     with pytest.raises(ValidationError, match="missing"):
         build_release(store, site)
     assert site.get("data/current.json") == b'{"dataset_id":"previous"}'
+
+
+def test_release_relabels_zones_from_coordinates(tmp_path, monkeypatch):
+    """Zone labels are re-derived at build time, not read back from the curated
+    facts. Raw Riot responses are never kept, so a game crawled under an older
+    zone map has to pick up the current one from its stored coordinates."""
+    import array
+
+    from proleague.curated import LocalObjects, ingest_match
+    from proleague.dataset import build_release
+    from proleague.extract.routing import Region
+    import proleague.transform.kills as kills
+    import make_fixture
+
+    rng = random.Random(11)
+    mid = "NA1_9001"
+    match = make_fixture.make_match(rng, mid, patch="16.17.1", duration_s=1800)
+    timeline = make_fixture.make_timeline(rng, match)
+    killed = collections.Counter(event["victimId"] for frame in timeline["info"]["frames"]
+                                 for event in frame["events"] if event["type"] == "CHAMPION_KILL")
+    for participant in match["info"]["participants"]:      # curation reconciles these
+        participant["deaths"] = killed[participant["participantId"]]
+    client = collections.namedtuple("C", "match timeline")(lambda *a, **k: match,
+                                                           lambda *a, **k: timeline)
+    store, site = LocalObjects(tmp_path / "store"), LocalObjects(tmp_path / "site")
+    monkeypatch.setattr(kills, "region_sk", lambda x, y: 0)     # a stale zone map
+    complete, _ = ingest_match(client, Region("americas"), mid, store, patches=[], run_id="r")
+    monkeypatch.undo()
+    assert complete["row_count"] > 0
+
+    published = build_release(store, site)
+    manifest = json.loads(site.get(f'data/releases/{published["dataset_id"]}/manifest.json'))
+    core = site.get(f'data/releases/{published["dataset_id"]}/core.bin')
+    columns = {c["name"]: c for c in manifest["core"]["columns"]}
+
+    def column(name, code):
+        c = columns[name]
+        values = array.array(code)
+        values.frombytes(core[c["offset"]:c["offset"] + c["length"] * values.itemsize])
+        return values
+
+    zones = column("region_sk", "B")
+    xs, ys = column("x", "h"), column("y", "h")
+    assert len(zones) == complete["row_count"]
+    assert list(zones) == [region_sk(x, y) for x, y in zip(xs, ys)]
+    assert set(zones) != {0}, "the stale label survived into the release"
+
+
+def test_release_never_reuses_one_scratch_parquet_name(tmp_path, monkeypatch):
+    """Each match gets its own temp file. Overwriting a single scratch name
+    exhausts DuckDB's per-path state after a few thousand matches, which is not
+    reachable in a unit test -- so assert the property that prevents it."""
+    import proleague.dataset as dataset
+
+    seen = []
+
+    class Recorder:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            for fragment in sql.split("read_parquet('")[1:]:
+                seen.append(fragment.split("'")[0])
+            return self.inner.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    connect = dataset.duckdb.connect
+    monkeypatch.setattr(dataset.duckdb, "connect", lambda *a, **k: Recorder(connect(*a, **k)))
+
+    store, site = _seeded_store(tmp_path, count=3)
+    dataset.build_release(store, site)
+
+    scratch = [path for path in seen if path.endswith(".parquet")]
+    assert len(set(scratch)) == 3, f"3 matches should use 3 files, got {sorted(set(scratch))}"
+
+
+def _seeded_store(tmp_path, count):
+    """`count` real curated matches in a local store, ready to publish."""
+    from proleague.curated import LocalObjects, ingest_match
+    from proleague.extract.routing import Region
+    import make_fixture
+
+    rng = random.Random(5)
+    store, site = LocalObjects(tmp_path / "store"), LocalObjects(tmp_path / "site")
+    for i in range(count):
+        mid = f"NA1_770{i}"
+        match = make_fixture.make_match(rng, mid, patch="16.17.1", duration_s=1800)
+        timeline = make_fixture.make_timeline(rng, match)
+        killed = collections.Counter(event["victimId"] for frame in timeline["info"]["frames"]
+                                     for event in frame["events"] if event["type"] == "CHAMPION_KILL")
+        for participant in match["info"]["participants"]:
+            participant["deaths"] = killed[participant["participantId"]]
+        client = collections.namedtuple("C", "match timeline")(lambda *a, **k: match,
+                                                               lambda *a, **k: timeline)
+        ingest_match(client, Region("americas"), mid, store, patches=[], run_id="r")
+    return store, site

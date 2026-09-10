@@ -197,17 +197,19 @@ class Controller:
 
     def snapshot(self, run=None):
         if run is None:
-            pointer = self.store.get("ACTIVE") or self.store.get("LATEST")
-            run = self.store.get("RUN#" + pointer["run_id"]) if pointer else None
+            for key in ("ACTIVE", "LATEST"):
+                pointer = self.store.get(key)
+                if pointer and (run := self.store.get("RUN#" + pointer["run_id"])):
+                    break
         public = {key: run.get(key) for key in PUBLIC_FIELDS if key in run} if run else None
-        if public and public.get("status") in ERRORS:
+        if public and public.get("status") in ERRORS and public.get("mode") != "rebuild":
             public["error"] = ERRORS[public["status"]]
         published = self.store.get("PUBLISHED")
         dataset = {key: published[key] for key in ("dataset_id", "count") if key in published} if published else None
         return {"run": public, "dataset": dataset}
 
     def advance(self, run):
-        if run["status"] != "starting":
+        if not run or run["status"] != "starting":
             return run
         run_id = run["run_id"]
         active = self.store.get("ACTIVE")
@@ -286,6 +288,10 @@ class Controller:
         active = self.store.get("ACTIVE")
         if active:
             run = self.store.get("RUN#" + active["run_id"])
+            if run is None:
+                # Nothing here is reconcilable: the record may still be seconds
+                # away, and releasing the lock would evict its rightful owner.
+                return self.snapshot()
             if run["status"] in TERMINAL:
                 self.store.release(run["run_id"])
             elif active.get("task_arn"):

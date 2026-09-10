@@ -14,7 +14,8 @@ from dataclasses import replace
 
 from .config import Config
 from .curated import (SCHEMA_VERSION, LocalObjects, S3Objects, ValidationError,
-                      ingest_match, json_bytes, match_prefix, read_complete)
+                      ingest_match, match_prefix, read_complete,
+                      settled_scope, settled_status)
 from .dataset import build_release
 from .extract.riot_client import AuthError, RiotAPIError, RiotClient
 from .extract.routing import Platform, Region
@@ -127,14 +128,19 @@ class Collection:
         self.state.update("RUN#" + self.run_id, **fields)
         self.run.update(fields)
 
-    def check(self):
+    def check_ownership(self):
         if self.ownership_lost.is_set():
             raise OwnershipError("Collection ownership was lost")
-        if self.stop.is_set():
-            raise Paused("Collection interrupted")
         active = self.state.get("ACTIVE")
         if not active or active.get("run_id") != self.run_id:
             raise OwnershipError("Collection ownership was lost")
+
+    def check(self):
+        # Ownership first: when a run has lost the lock and been interrupted,
+        # the lock is the one that must not be written over.
+        self.check_ownership()
+        if self.stop.is_set():
+            raise Paused("Collection interrupted")
 
     def heartbeat(self):
         while not self.heartbeat_stop.wait(self.heartbeat_seconds):
@@ -156,8 +162,7 @@ class Collection:
             self.patch(new_games=len(self.successes))
 
     def recover(self):
-        self.scope = hashlib.sha256(json_bytes(
-            {"patches": self.cfg.patches, "schema": SCHEMA_VERSION})).hexdigest()
+        self.scope = settled_scope(self.cfg.patches)
         self.successes = {r["match_id"] for r in self.state.scan(f"RUNMATCH#{self.run_id}#")}
         self.known = {r["match_id"]: r for r in self.state.scan("MATCH#")}
         self.scanned = {r["puuid"]: plain(r) for r in self.state.scan(self.player_key(""))}
@@ -191,12 +196,7 @@ class Collection:
     def settled(self, match_id):
         """Global dedupe. A match already committed under this schema, or already
         rejected under this patch scope, costs no Riot request in any later run."""
-        known = self.known.get(match_id) or {}
-        if known.get("status") == "complete" and known.get("schema_version") == SCHEMA_VERSION:
-            return "cached"
-        if known.get("status") == "rejected" and known.get("scope") == self.scope:
-            return "rejected"
-        return None
+        return settled_status(self.known.get(match_id), self.scope)
 
     def advance_watermarks(self):
         """Record how far each fully walked history has been scanned.
@@ -348,6 +348,38 @@ class Collection:
         if self.mode == "full":
             self.process(list(self.candidates.values()))
 
+    def publish(self, guard):
+        """Build and publish a release covering every curated game we can see.
+
+        A release is the cumulative union of the curated prefix, not this run's
+        haul, so this is worth doing whenever the run added anything at all.
+        """
+        if not any(r.get("status") == "complete" for r in self.known.values()):
+            return
+        self.patch(stage="publishing")
+        published = self.publisher(self.store, self.site, run_id=self.run_id, before_publish=guard)
+        self.state.put("PUBLISHED", dict(published, run_id=self.run_id, updated_at=now()))
+        self.patch(published_version=published["dataset_id"])
+
+    def salvage(self, status, stage):
+        """Publish before recording a terminal status that ends collection early.
+
+        An expired key or a stop signal ends the collecting, not the games: they
+        are already durable under the curated prefix, and publication is the
+        only step that makes them visible. Skipping it strands every game the
+        run collected until someone rebuilds by hand. The publish itself is
+        atomic -- immutable objects first, pointer last -- so an attempt that is
+        killed partway leaves orphaned objects and the previous release intact.
+        """
+        try:
+            self.publish(self.check_ownership)
+        except OwnershipError:
+            raise
+        except Exception as exc:
+            log.error("%s", json.dumps({"event": "salvage_publish_failed", "run_id": self.run_id,
+                      "status": status, "type": type(exc).__name__}))
+        self.patch(status=status, stage=stage)
+
     def execute(self):
         saved = self.state.get("RUN#" + self.run_id)
         if saved and saved.get("status") == "succeeded":
@@ -378,11 +410,7 @@ class Collection:
             self.collect()
             self.check()
             self.advance_watermarks()
-            if any(r.get("status") == "complete" for r in self.known.values()):
-                self.patch(stage="publishing")
-                published = self.publisher(self.store, self.site, run_id=self.run_id, before_publish=self.check)
-                self.state.put("PUBLISHED", dict(published, run_id=self.run_id, updated_at=now()))
-                self.patch(published_version=published["dataset_id"])
+            self.publish(self.check)
             errors = sum(r["status"] == "error" for r in self.candidates.values())
             if self.run["target"] is not None and not self.target_reached():
                 self.patch(status="paused", stage="retry_required" if errors else "exhausted")
@@ -391,9 +419,9 @@ class Collection:
             else:
                 self.patch(status="succeeded", stage="complete")
         except AuthError:
-            self.patch(status="auth_required", stage="auth_required")
+            self.salvage("auth_required", "auth_required")
         except Paused:
-            self.patch(status="paused", stage="interrupted")
+            self.salvage("paused", "interrupted")
         except OwnershipError:
             # Another owner can now control state and publication; do not overwrite it.
             raise
