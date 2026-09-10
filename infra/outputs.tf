@@ -1,0 +1,13 @@
+output "site_url" { value = "https://${aws_cloudfront_distribution.site.domain_name}" }
+output "distribution_id" { value = aws_cloudfront_distribution.site.id }
+output "api_url" { value = aws_apigatewayv2_api.control.api_endpoint }
+output "data_bucket" { value = aws_s3_bucket.data.id }
+output "site_bucket" { value = aws_s3_bucket.site.id }
+output "state_table" { value = aws_dynamodb_table.state.name }
+output "ecr_repository" { value = aws_ecr_repository.collector.repository_url }
+output "task_definition" { value = aws_ecs_task_definition.collector.arn }
+output "task_architecture" { value = var.task_architecture }
+output "ecs_cluster" { value = aws_ecs_cluster.collector.arn }
+output "ssm_parameter_name" { value = var.ssm_parameter_name }
+output "athena_workgroup" { value = aws_athena_workgroup.quality.name }
+output "glue_database" { value = aws_glue_catalog_database.heatmap.name }

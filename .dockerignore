@@ -1,0 +1,17 @@
+*
+!Dockerfile
+!requirements.txt
+!config.yaml
+!src/
+!src/**
+!scripts/
+!scripts/**
+!web/
+!web/**
+**/__pycache__/
+**/*.pyc
+**/.env*
+web/data/
+scripts/aws_*
+scripts/make_fixture.py
+scripts/shoot_ui.sh

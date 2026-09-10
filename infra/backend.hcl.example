@@ -1,0 +1,7 @@
+# Fill in ACCOUNT_ID after applying infra/bootstrap.
+bucket       = "proleague-heatmap-tfstate-ACCOUNT_ID-us-east-1"
+key          = "application/terraform.tfstate"
+region       = "us-east-1"
+profile      = "default"
+encrypt      = true
+use_lockfile = true

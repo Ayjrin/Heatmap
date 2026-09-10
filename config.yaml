@@ -1,0 +1,11 @@
+# Manual Riot ETL configuration; unknown keys are rejected.
+platform: na1
+region: americas
+tiers: [CHALLENGER, GRANDMASTER]
+# Empty includes every patch in the discovered histories.
+patches: []
+start_time_epoch: null
+# Full refreshes this many latest matches per player on each new run.
+matches_per_player: 100
+grid_size: 128
+min_sample_warn: 200
