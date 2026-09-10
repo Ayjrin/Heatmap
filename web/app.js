@@ -4,11 +4,23 @@ import { D, S, MAP, BETA_K, MIN_CELL, THIN, MIN_DENSITY, ROLLUPS,
 import { loadBundle, loadExtended, loadChampionNames, reconcileFilters } from './data.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 
-/* Separable Gaussian, 9-tap. Numerator and denominator are smoothed
- * separately upstream (we smooth counts, never a ratio) — smoothing a ratio
- * is wrong wherever density varies sharply, which is everywhere near edges. */
+/* Separable Gaussian, 9-tap. Always applied to raw counts, never to a value
+ * derived from them: Danger blurs its deaths and kills grids separately and
+ * only then forms the ratio. Blurring the ratio itself would weight a cell of
+ * one event the same as a cell of fifty, which is wrong wherever density
+ * varies sharply — and near the map edges it always does. */
+const KERNEL = [0.0276, 0.0663, 0.1238, 0.1802, 0.2042, 0.1802, 0.1238, 0.0663, 0.0276];
+/* The kernel sums to 1, so a blurred cell holds a local MEAN, not a total.
+ * 1/Σw² is that mean's effective sample size — about 46 cells here — and it is
+ * the factor that turns the mean back into "events this cell summarizes".
+ * Both the Beta prior and the MIN_CELL floor are calibrated against event
+ * counts, so both must see that number rather than the mean; otherwise ten
+ * imaginary trades outweigh a whole neighbourhood and every smoothed ratio
+ * cell collapses to 0.5. */
+const NEIGHBOURHOOD = 1 / KERNEL.reduce((sum, w) => sum + w * w, 0) ** 2;
+
 function blur(src, size) {
-  const k = [0.0276, 0.0663, 0.1238, 0.1802, 0.2042, 0.1802, 0.1238, 0.0663, 0.0276];
+  const k = KERNEL;
   const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     let s = 0;
@@ -63,10 +75,40 @@ async function loadMapImage() {
 
 function render(result) {
   const size = result.size;
-  const { out, kind, hi } = layerField(result);
+  // Smoothing happens on the counts, so every layer — including the Danger
+  // and Opportunity ratios — gets it. Sharing one blurred source also keeps
+  // the density mask and the drawn value derived from the same numbers.
+  const shown = S.smooth
+    ? { ...result, deaths: blur(result.deaths, size), kills: blur(result.kills, size),
+        evidence: NEIGHBOURHOOD }
+    : result;
+  D.lastShown = shown;                   // the tooltip reports what was drawn
+  const { out: field, kind, hi } = layerField(shown);
   const ratio = kind === 'ratio';
-  const field = (S.smooth && !ratio) ? blur(out, size) : out;
-  const hiV = ratio ? 1 : (S.smooth ? pct(field, 0.99) : hi);
+  const hiV = ratio ? 1 : hi;
+  // A ratio layer carries its confidence in alpha rather than in colour.
+  // Unsmoothed, the cell's own event count drives that directly. Smoothed,
+  // density is a continuous field covering the whole map, so it is ramped
+  // against its own p99 the way the count layers are — a flat floor would
+  // paint every cell alike and bury both the map art and the signal.
+  const density = ratio ? new Float32Array(size * size) : null;
+  if (density) for (let i = 0; i < density.length; i++) density[i] = shown.deaths[i] + shown.kills[i];
+  const denseHi = density && S.smooth ? pct(density, 0.99) || 1 : 1;
+  const drawn = i => density[i] * (shown.evidence || 1) >= MIN_CELL;
+  // A danger ratio almost never leaves 0.4-0.6 once the noise is averaged out,
+  // so painting it across the full 0-1 ramp renders every cell the same
+  // near-neutral grey. Keep 0.5 pinned to the ramp's midpoint, because on a
+  // diverging scale the midpoint has to stay "even", and stretch the span to
+  // the drawn data. The legend prints the resulting endpoints, so the stretch
+  // is stated rather than silently implied.
+  let spread = 0.5;
+  if (ratio) {
+    const devs = [];
+    for (let i = 0; i < field.length; i++)
+      if (!Number.isNaN(field[i]) && drawn(i)) devs.push(Math.abs(field[i] - 0.5));
+    devs.sort((a, b) => a - b);
+    if (devs.length) spread = Math.max(0.02, devs[Math.floor((devs.length - 1) * 0.98)]);
+  }
 
   off.width = off.height = size;
   const img = octx.createImageData(size, size);
@@ -77,10 +119,13 @@ function render(result) {
     let a = 0, idx = 0;
     if (Number.isNaN(v)) { a = 0; }
     else if (ratio) {
-      const d = result.deaths[i] + result.kills[i];
-      if (d < MIN_CELL) a = 0;
-      else { idx = Math.max(0, Math.min(255, Math.round(v * 255)));
-             a = Math.min(255, 90 + d * 12); }
+      if (!drawn(i)) a = 0;
+      else {
+        const t = 0.5 + (v - 0.5) / (2 * spread);
+        idx = Math.max(0, Math.min(255, Math.round(t * 255)));
+        a = S.smooth ? Math.round(Math.pow(Math.min(1, density[i] / denseHi), 0.65) * 255)
+          : Math.min(255, 90 + density[i] * 12);
+      }
     } else if (v > 0 && hiV > 0) {
       let t = v / hiV;
       if (S.scale === 'sqrt') t = Math.sqrt(t);
@@ -103,10 +148,12 @@ function render(result) {
   if (mapImage) { mctx.globalAlpha = 0.55; mctx.drawImage(mapImage, 0, 0, W, H); mctx.globalAlpha = 1; }
   mctx.imageSmoothingEnabled = true;
   mctx.drawImage(off, 0, 0, W, H);
-  drawLegend(ratio, hiV, result);
+  drawLegend(ratio, ratio ? spread : hiV, result);
 }
 
-function drawLegend(ratio, hi, r) {
+/* `scale` is the p99 share for a count layer and the half-span around 0.5 for
+ * a ratio layer; both are whatever the renderer just clipped the ramp to. */
+function drawLegend(ratio, scale, r) {
   const c = $('#ramp'), x = c.getContext('2d');
   const img = x.createImageData(c.width, 1);
   const L = ratio ? LUT_DIV : LUT_SEQ;
@@ -120,14 +167,15 @@ function drawLegend(ratio, hi, r) {
   const names = { deaths: 'Deaths', kills: 'Kills', danger: 'Danger', opportunity: 'Opportunity' };
   $('#lgTitle').textContent = names[S.layer];
   if (ratio) {
-    $('#lgLo').textContent = S.layer === 'danger' ? 'wins fights' : 'loses fights';
-    $('#lgHi').textContent = S.layer === 'danger' ? 'loses fights' : 'wins fights';
+    $('#lgLo').textContent = `${(0.5 - scale).toFixed(2)} · ${S.layer === 'danger' ? 'wins fights' : 'loses fights'}`;
+    $('#lgHi').textContent = `${S.layer === 'danger' ? 'loses fights' : 'wins fights'} · ${(0.5 + scale).toFixed(2)}`;
     $('#lgNote').textContent =
-      `${S.layer === 'danger' ? '(D+5)/(D+K+10)' : '(K+5)/(D+K+10)'}, with a Beta(5,5) prior. 0.5 = even. `
-      + `Cells with fewer than ${MIN_CELL} events are not drawn.`;
+      `${S.layer === 'danger' ? '(D+5)/(D+K+10)' : '(K+5)/(D+K+10)'}, with a Beta(5,5) prior. 0.5 = even, `
+      + `and the ramp is stretched to the range actually present. `
+      + `Cells with fewer than ${MIN_CELL} ${S.smooth ? 'smoothed ' : ''}events are not drawn.`;
   } else {
     $('#lgLo').textContent = '0';
-    $('#lgHi').textContent = `${(hi * 100).toFixed(2)}% of ${S.layer}`;
+    $('#lgHi').textContent = `${(scale * 100).toFixed(2)}% of ${S.layer}`;
     $('#lgNote').textContent =
       'Share of the filtered total, clipped at p99 so one objective cell does '
       + 'not flatten the map.';
@@ -138,9 +186,9 @@ function drawLegend(ratio, hi, r) {
 function renderZones(result) {
   const list = $('#zoneList'); list.replaceChildren();
   const summary = zoneSummary(result), ratio = ['danger', 'opportunity'].includes(S.layer);
-  $('#zoneNote').textContent = S.mirror
-    ? 'Totals use the original event zones before mirroring.'
-    : ratio ? 'Zone ratios use exact event totals; at least 5 events per zone.' : 'Share of events in each original map zone.';
+  $('#zoneNote').textContent = ratio
+    ? 'Zone ratios use exact event totals; at least 5 events per zone.'
+    : 'Share of events in each map zone. Zone totals are always exact, never smoothed.';
   for (const zone of summary.slice(0, 8)) {
     const name = D.regions[zone.region]?.name || 'Unlabelled';
     const item = document.createElement('li'), label = document.createElement('span');

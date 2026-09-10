@@ -1,6 +1,6 @@
 import { D, S, apply, loadBundle, loadExtended, loadMapImage, loadChampionNames,
   readURL, resetState, schedule } from './app.js';
-import { playerLabel } from './data.mjs';
+import { playerLabel, playerName, playerTag } from './data.mjs';
 import { CollectionController, ACTIVE, runDescription } from './collection.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -8,7 +8,10 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const OPTIONS = {
   role: () => (D.meta.roles || []).map((name, i) => ({ v: i, label: name })),
   champ: () => D.champions.map(id => ({ v: id, label: D.champNames.get(id) || `Champion ${id}` })),
-  player: () => D.players.map((player, i) => ({ v: i, label: playerLabel(player) })),
+  // label is the in-game name; sub is the tagline, shown dimmed and searchable
+  // so the ~1% of ladder names that collide stay distinguishable.
+  player: () => D.players.map((player, i) =>
+    ({ v: i, label: playerName(player), sub: playerTag(player), full: playerLabel(player) })),
   side: () => [{ v: 100, label: 'Blue side' }, { v: 200, label: 'Red side' }],
   region: () => D.regions.map((region, i) => ({ v: i, label: region.name })),
   cause: () => (D.meta.causes || []).map((name, i) => ({ v: i, label: name })),
@@ -30,12 +33,13 @@ function fuzzy(q, items) {
   const norm = s => s.toLowerCase().replace(/[^a-z0-9#]/g, '');
   const nq = norm(q);
   const score = it => {
-    const l = it.label.toLowerCase(), n = norm(it.label);
-    if (l === q || (alias && l === alias)) return 0;
+    const full = optionFull(it).toLowerCase();
+    const l = it.label.toLowerCase(), n = norm(l), nf = norm(full);
+    if (l === q || full === q || (alias && l === alias)) return 0;
     if (n.startsWith(nq)) return 1;
-    if (n.includes(nq)) return 2;
+    if (n.includes(nq) || nf.startsWith(nq)) return 2;
     let i = 0;                                   // subsequence match
-    for (const ch of n) if (ch === nq[i]) i++;
+    for (const ch of nf) if (ch === nq[i]) i++;
     return i === nq.length ? 3 : 99;
   };
   return items.map(it => [score(it), it]).filter(([s]) => s < 99)
@@ -43,6 +47,16 @@ function fuzzy(q, items) {
     .slice(0, 60).map(([, it]) => it);
 }
 
+const optionFull = option => option.full || option.label + (option.sub || '');
+/* The tagline is real information, not decoration: it is dimmed rather than
+ * dropped so two players called "Tree" never collapse into one filter pill. */
+function writeOption(el, option, prefix = '') {
+  el.replaceChildren(prefix + option.label);
+  if (!option.sub) return;
+  const sub = document.createElement('span');
+  sub.className = 'tagline'; sub.textContent = option.sub;
+  el.append(sub);
+}
 
 function renderFacet(el) {
   const group = el.closest('[data-group]').dataset.group, facet = el.dataset.facet;
@@ -55,10 +69,11 @@ function renderFacet(el) {
   head.append(label, add); el.append(head);
   const pills = document.createElement('div'); pills.className = 'pills';
   for (const [i, entry] of entries.entries()) {
-    const name = options.find(option => option.v === entry.v)?.label || String(entry.v);
+    const option = options.find(option => option.v === entry.v) || { label: String(entry.v) };
+    const name = optionFull(option);
     const pill = document.createElement('span'); pill.className = `pill${entry.neg ? ' neg' : ''}`;
     const toggle = document.createElement('button'); toggle.className = 'lbl';
-    toggle.textContent = `${entry.neg ? '¬ ' : ''}${name}`;
+    writeOption(toggle, option, entry.neg ? '¬ ' : '');
     toggle.title = `${entry.neg ? 'Include' : 'Exclude'} ${name}`;
     toggle.setAttribute('aria-label', toggle.title);
     toggle.onclick = () => { entry.neg = !entry.neg; renderFacet(el); schedule(); };
@@ -91,7 +106,8 @@ function openTypeahead(el, group, facet, options) {
     shown = fuzzy(input.value, options); selected = Math.max(0, Math.min(selected, shown.length - 1));
     menu.replaceChildren();
     shown.forEach((option, i) => {
-      const button = document.createElement('button'); button.textContent = option.label;
+      const button = document.createElement('button'); writeOption(button, option);
+      button.title = optionFull(option);
       button.className = i === selected ? 'sel' : '';
       button.onclick = () => pick(option); menu.append(button);
     });
@@ -193,8 +209,16 @@ function wireTooltip() {
     const by = Math.max(0, Math.min(size - 1, Math.floor((1 - (event.clientY - bounds.top) / bounds.height) * size)));
     const i = by * size + bx, d = result.deaths[i], k = result.kills[i];
     if (!d && !k) { tip.hidden = true; return; }
-    const danger = (d + 5) / (d + k + 10);
-    tip.textContent = `Map cell · ${d} deaths · ${k} kills\nDanger ${danger.toFixed(2)} · Opportunity ${(1 - danger).toFixed(2)}${d + k < 5 ? '\nRatio suppressed: fewer than 5 events' : ''}`;
+    // Counts are always this cell's exact events. The ratio follows whatever
+    // the map drew, which is the smoothed neighbourhood when Smooth is on, so
+    // the suppression notice agrees with what is or is not painted.
+    const shown = D.lastShown || result;
+    const sd = shown.deaths[i], sk = shown.kills[i];
+    const danger = (sd + 5) / (sd + sk + 10);
+    tip.textContent = `Map cell · ${d} deaths · ${k} kills\n`
+      + `Danger ${danger.toFixed(2)} · Opportunity ${(1 - danger).toFixed(2)}`
+      + (S.smooth ? ' (smoothed)' : '')
+      + (sd + sk < 5 ? '\nRatio suppressed: fewer than 5 events' : '');
     tip.hidden = false;
     tip.style.left = `${Math.max(0, Math.min(event.clientX - bounds.left + 12, bounds.width - tip.offsetWidth))}px`;
     tip.style.top = `${Math.max(0, Math.min(event.clientY - bounds.top + 12, bounds.height - tip.offsetHeight))}px`;
@@ -211,7 +235,7 @@ function syncControls() {
   $$('#layers input').forEach(input => { input.checked = input.value === S.layer; });
   $$('#gridSeg button').forEach(button => { button.classList.toggle('on', button.dataset.g === S.grid); button.setAttribute('aria-pressed', button.dataset.g === S.grid); });
   $$('#scaleSeg button').forEach(button => { button.classList.toggle('on', button.dataset.s === S.scale); button.setAttribute('aria-pressed', button.dataset.s === S.scale); });
-  $('#mirrorChk').checked = S.mirror; $('#smoothChk').checked = S.smooth;
+  $('#smoothChk').checked = S.smooth;
 }
 function setupDatasetControls() {
   stopPlayback(); closeTypeahead();
@@ -229,7 +253,6 @@ function wireControls() {
   $$('#layers input').forEach(input => { input.onchange = () => { S.layer = input.value; schedule(); }; });
   $$('#gridSeg button').forEach(button => { button.onclick = () => { S.grid = button.dataset.g; syncControls(); schedule(); }; });
   $$('#scaleSeg button').forEach(button => { button.onclick = () => { S.scale = button.dataset.s; syncControls(); schedule(); }; });
-  $('#mirrorChk').onchange = event => { S.mirror = event.target.checked; schedule(); };
   $('#smoothChk').onchange = event => { S.smooth = event.target.checked; schedule(); };
   $('#themeBtn').onclick = () => { document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; };
   $('#resetBtn').onclick = () => {
@@ -267,7 +290,7 @@ async function refreshDataset() {
       } else {
         $('#loading .spin').hidden = true;
         $('#loadingText').textContent = error.code === 'empty'
-          ? 'No real dataset collected yet. Use a Proof of Concept button to collect games.'
+          ? 'No real dataset collected yet. Use Update game data to collect games.'
           : error.message || 'Real data could not be loaded. Please retry.';
         $('#datasetRetry').hidden = false;
         $('#nStat').textContent = 'No real dataset available';

@@ -68,5 +68,9 @@ export function runDescription(run) {
   const labels = { starting: 'Starting', running: 'Collecting', auth_required: 'Riot key needs updating',
     failed: 'Collection failed', succeeded: 'Collection complete', paused: 'Collection paused' };
   const stage = typeof run.stage === 'string' ? run.stage.replaceAll('_', ' ') : '';
-  return `${labels[run.status] || 'Collection status'} · ${progress}${stage ? ` · ${stage}` : ''}`;
+  // An update reads every ladder history before fetching its first game, so
+  // report the growing candidate pool rather than leaving a long, still zero.
+  const found = Math.max(0, Number(run.discovered_games) || 0);
+  const discovery = found ? ` · ${found.toLocaleString()} candidates found` : '';
+  return `${labels[run.status] || 'Collection status'} · ${progress}${discovery}${stage ? ` · ${stage}` : ''}`;
 }

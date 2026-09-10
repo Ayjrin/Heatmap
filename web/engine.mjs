@@ -9,34 +9,29 @@ export const defaults = () => ({
   layer: 'deaths', subject: { role: [], champ: [], player: [], side: [] },
   opponent: { role: [], champ: [], player: [] }, context: { region: [], cause: [], patch: [] },
   time: null, gold: null, lanegold: null, assists: null,
-  grid: 'auto', scale: 'lin', mirror: false, smooth: true,
+  grid: 'auto', scale: 'lin', smooth: true,
 });
 export const S = defaults();
 export function resetState() { Object.assign(S, defaults()); }
 export const playerIdentity = player => typeof player === 'string' ? player : player?.id || player?.puuid;
 
 export function buildDerived(data = D) {
-  const { x, y, flags } = data.cols;
-  const mk = (size, actor) => {
+  const { x, y } = data.cols;
+  // Events are binned where they happened. Summoner's Rift is only rotationally
+  // similar, not symmetric — the lanes, camps and brush differ side to side —
+  // so folding red onto blue would blend cells that are not the same place.
+  const mk = size => {
     const cells = new Uint16Array(data.rows);
     for (let i = 0; i < data.rows; i++) {
-      let u = (x[i] - MAP.minX) / MAP.spanX, v = (y[i] - MAP.minY) / MAP.spanY;
-      const victimRed = !!(flags[i] & 1);
-      if ((actor === 'victim' && victimRed) || (actor === 'killer' && !victimRed)) {
-        [u, v] = [1 - v, 1 - u];
-      }
+      const u = (x[i] - MAP.minX) / MAP.spanX, v = (y[i] - MAP.minY) / MAP.spanY;
       const bx = Math.max(0, Math.min(size - 1, Math.floor(u * size)));
       const by = Math.max(0, Math.min(size - 1, Math.floor(v * size)));
       cells[i] = by * size + bx;
     }
     return cells;
   };
-  data.cell = {}; data.cellVictim = {}; data.cellKiller = {};
-  for (const size of ROLLUPS) {
-    data.cell[size] = mk(size, null);
-    data.cellVictim[size] = mk(size, 'victim');
-    data.cellKiller[size] = mk(size, 'killer');
-  }
+  data.cell = {};
+  for (const size of ROLLUPS) data.cell[size] = mk(size);
 }
 
 export function facetOk(entries, value) {
@@ -59,8 +54,7 @@ function actorOk(data, filter, i, actor) {
 export function scan(size, data = D, state = S) {
   if (state.lanegold && !data.extendedLoaded) throw new Error('Lane gold data is still loading.');
   const c = data.cols, deaths = new Uint32Array(size * size), kills = new Uint32Array(size * size);
-  const cellsD = (state.mirror ? data.cellVictim : data.cell)[size];
-  const cellsK = (state.mirror ? data.cellKiller : data.cell)[size];
+  const cells = data.cell[size];
   const zones = new Map(), matchesD = new Set(), matchesK = new Set();
   let nD = 0, nK = 0;
   const within = (value, range) => !range || (value >= range[0] && value <= range[1]);
@@ -79,8 +73,8 @@ export function scan(size, data = D, state = S) {
     const region = c.region_sk[i];
     if (!zones.has(region)) zones.set(region, { region, deaths: 0, kills: 0 });
     const zone = zones.get(region);
-    if (asVictim) { deaths[cellsD[i]]++; nD++; zone.deaths++; matchesD.add(c.match_sk[i]); }
-    if (asKiller) { kills[cellsK[i]]++; nK++; zone.kills++; matchesK.add(c.match_sk[i]); }
+    if (asVictim) { deaths[cells[i]]++; nD++; zone.deaths++; matchesD.add(c.match_sk[i]); }
+    if (asKiller) { kills[cells[i]]++; nK++; zone.kills++; matchesK.add(c.match_sk[i]); }
   }
   const nMatch = state.layer === 'deaths' ? matchesD.size : state.layer === 'kills' ? matchesK.size
     : new Set([...matchesD, ...matchesK]).size;
@@ -100,8 +94,11 @@ export function layerField(result, state = S) {
     if (total) for (let i = 0; i < out.length; i++) out[i] = src[i] / total;
     return { out, kind: 'share', lo: 0, hi: pct(out, 0.99) };
   }
+  // `evidence` converts smoothed local means back to the event counts the
+  // prior and the MIN_CELL floor are defined against; it is 1 for raw counts.
+  const w = result.evidence || 1;
   for (let i = 0; i < out.length; i++) {
-    const d = deaths[i], k = kills[i];
+    const d = deaths[i] * w, k = kills[i] * w;
     const danger = (d + BETA_K / 2) / (d + k + BETA_K);
     out[i] = d + k < MIN_CELL ? NaN : state.layer === 'danger' ? danger : 1 - danger;
   }
@@ -150,7 +147,7 @@ export function parseState(search) {
     if (pair?.length === 2 && pair.every(Number.isFinite) && pair[0] <= pair[1])
       state[key] = pair.map(value => Math.min(max, Math.max(min, value)));
   }
-  state.mirror = params.get('mirror') === '1'; state.smooth = params.get('smooth') !== '0';
+  state.smooth = params.get('smooth') !== '0';
   return state;
 }
 
@@ -170,7 +167,6 @@ export function stateQuery(state = S, data = D) {
   for (const key of Object.keys(ranges)) if (state[key]) params.set(key, state[key].join(','));
   if (state.grid !== 'auto') params.set('grid', state.grid);
   if (state.scale !== 'lin') params.set('scale', state.scale);
-  if (state.mirror) params.set('mirror', '1');
   if (!state.smooth) params.set('smooth', '0');
   return params.toString();
 }

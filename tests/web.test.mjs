@@ -83,17 +83,19 @@ test('event layers count executions and matching games independently', () => {
   assert.deepEqual([scan(32, data, state).nD, scan(32, data, state).nK], [3, 2]);
 });
 
-test('red actors mirror independently with normalized map coordinates', () => {
-  const data = sample(), state = defaults(); state.mirror = true;
+test('events bin at their own normalized coordinates, with no side folding', () => {
+  const data = sample(), state = defaults();
   const result = scan(32, data, state);
-  // Blue at normalized (0.075, 0.140); red maps to (0.860, 0.925).
-  const blueCell = 4 * 32 + 2, redCell = 29 * 32 + 27;
-  assert.equal(result.deaths[blueCell], 3); assert.equal(result.deaths[redCell], 2);
-  assert.equal(result.kills[blueCell], 2); assert.equal(result.kills[redCell], 3);
+  // Rows 0-4 sit at normalized (0.075, 0.140) whatever side the victim is on;
+  // red is never folded onto blue, because the Rift is not a true mirror.
+  const shared = 4 * 32 + 2, far = 19 * 32 + 19;
+  assert.equal(result.deaths[shared], 5); assert.equal(result.kills[shared], 5);
+  assert.equal(result.deaths[far], 1);
+  assert.equal(result.deaths.reduce((a, b) => a + b, 0), result.nD);
   state.subject.side = [{ v: 200, neg: false }];
   const red = scan(32, data, state);
   assert.deepEqual([red.nD, red.nK], [2, 3]);
-  assert.equal(red.deaths[redCell], 2); assert.equal(red.kills[redCell], 3);
+  assert.equal(red.deaths[shared], 2); assert.equal(red.kills[shared], 3);
 });
 
 test('lane gold applies to both matching actors and excludes the missing-value sentinel', () => {
@@ -115,11 +117,11 @@ test('team gold is blue minus red; context and inclusion/exclusion intersect', (
   assert.deepEqual([scan(32, data, state).nD, scan(32, data, state).nK], [1, 0]);
 });
 
-test('zone summaries use exact original events across grid sizes and mirroring', () => {
+test('zone summaries use exact original events across grid sizes', () => {
   const data = sample(), state = defaults(); state.subject.champ = [{ v: 10, neg: false }];
   const expected = [{ region: 1, deaths: 3, kills: 2 }, { region: 2, deaths: 1, kills: 0 }];
-  for (const size of [32, 64, 128]) for (const mirror of [false, true]) {
-    state.mirror = mirror; const result = scan(size, data, state);
+  for (const size of [32, 64, 128]) {
+    const result = scan(size, data, state);
     assert.deepEqual(result.zones, expected);
     assert.equal(zoneSummary(result, 'deaths')[0].value, 0.75);
     assert.equal(zoneSummary(result, 'danger')[0].value, 8 / 15);
@@ -152,9 +154,11 @@ test('player links preserve PUUID identity across reorder, duplicate names, and 
 
 test('URL validation retains supported controls and discards malformed values', () => {
   const state = parseState('?layer=danger&grid=12&scale=log&time=300,100&gold=-99999,99999&lanegold=-500,1000&mirror=1&s.champ=10,!20,bad');
+  // mirror was removed, not renamed: a stale link must not revive the control.
+  assert.ok(!('mirror' in state));
   assert.equal(state.layer, 'danger'); assert.equal(state.grid, 'auto'); assert.equal(state.scale, 'log');
   assert.equal(state.time, null); assert.deepEqual(state.gold, [-25000, 25000]);
-  assert.deepEqual(state.lanegold, [-500, 1000]); assert.equal(state.mirror, true);
+  assert.deepEqual(state.lanegold, [-500, 1000]);
   assert.deepEqual(state.subject.champ, [{ v: 10, neg: false }, { v: 20, neg: true }]);
 });
 
