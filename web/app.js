@@ -198,16 +198,10 @@ function renderZones(result) {
     bar.append(fill);
     const value = document.createElement('span'); value.className = 'num';
     value.textContent = ratio ? zone.value.toFixed(2) : `${(zone.value * 100).toFixed(1)}%`;
-    item.title = `${zone.deaths} deaths, ${zone.kills} kills`;
     item.append(label, bar, value); list.append(item);
   }
   if (!summary.length) {
     const item = document.createElement('li'); item.textContent = 'No matching events.'; list.append(item);
-  }
-  const breakdown = $('#breakList'); breakdown.replaceChildren();
-  for (const text of [`${result.nD.toLocaleString()} subject deaths`,
-    `${result.nK.toLocaleString()} subject kills`, `${result.nMatch.toLocaleString()} matching games`]) {
-    const item = document.createElement('li'); item.textContent = text; breakdown.append(item);
   }
 }
 
@@ -239,16 +233,13 @@ function apply() {
   renderZones(r);
 
   const nn = S.layer === 'kills' ? r.nK : S.layer === 'deaths' ? r.nD : r.nD + r.nK;
-  const noun = S.layer === 'kills' ? 'kills' : S.layer === 'deaths' ? 'deaths' : 'events';
-  $('#nStat').textContent =
-    `n = ${nn.toLocaleString()} ${noun} across ${r.nMatch.toLocaleString()} matches`;
   const auto = S.grid === 'auto' && size !== 128;
   $('#gridStat').textContent = `${size}² · ${(MAP.spanX / size) | 0} units/cell`
     + (auto ? ' · auto-coarsened for density' : '');
   const thin = $('#thinWarn');
   thin.hidden = nn >= THIN;
   if (!thin.hidden) thin.textContent =
-    nn === 0 ? 'No events match these filters.' : `${nn.toLocaleString()} events · small sample${auto ? ` · ${size}² grid` : ''}`;
+    nn === 0 ? 'No events match these filters.' : `Small sample${auto ? ` · ${size}² grid` : ''}`;
 
   const ratio = S.layer === 'danger' || S.layer === 'opportunity';
   const anySubject = Object.values(S.subject).some(a => a.length);

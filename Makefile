@@ -7,9 +7,9 @@ PORT ?= 8000
 help:
 	@echo "make setup    install local dependencies and pinned map assets"
 	@echo "make serve    run the app and collection API on localhost:$(PORT)"
-	@echo "make smoke | small | full    collect real Riot games (50 / 250 / refreshed universe)"
+	@echo "make smoke | small | full    collect Riot games (bounded, bounded, refreshed universe)"
 	@echo "make test     run isolated Python and production JavaScript tests"
-	@echo "make verify   validate the currently published real dataset"
+	@echo "make verify   validate the currently published dataset"
 
 setup:
 	python3 -m venv .venv
