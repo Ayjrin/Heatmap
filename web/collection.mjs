@@ -61,9 +61,9 @@ export class CollectionController {
 }
 
 export function runDescription(run) {
-  if (!run) return 'Ready to collect real ranked games.';
-  // A rebuild republishes games that were collected earlier, so every counter
-  // below it reads zero and every 'collecting' label misreads what it is doing.
+  if (!run) return 'Ready to collect ranked games.';
+  // A rebuild republishes games collected earlier, so 'Collecting' misreads it
+  // and every count it would report reads zero.
   if (run.mode === 'rebuild') {
     const rebuilds = { starting: 'Preparing to rebuild the published dataset',
       running: 'Rebuilding the published dataset from every collected game',
@@ -71,21 +71,11 @@ export function runDescription(run) {
       paused: 'Dataset rebuild stopped' };
     return rebuilds[run.status] || 'Dataset rebuild status';
   }
-  const n = Math.max(0, Number(run.new_games) || 0).toLocaleString();
-  const target = run.target == null ? '' : ` of ${Number(run.target).toLocaleString()}`;
-  const progress = `${n}${target} new games`;
   const labels = { starting: 'Starting', running: 'Collecting', auth_required: 'Riot key needs updating',
     failed: 'Collection failed', succeeded: 'Collection complete', paused: 'Collection paused' };
+  // The stage names the work in flight — an update reads every ladder history
+  // before it fetches its first game — so it is what keeps a long run legible
+  // now that the progress bar carries the counts on its own.
   const stage = typeof run.stage === 'string' ? run.stage.replaceAll('_', ' ') : '';
-  // An update reads every ladder history before fetching its first game, so
-  // report the growing candidate pool rather than leaving a long, still zero.
-  // A refresh can walk those histories and find nothing new, so fall back to
-  // the histories read: the stage is working even when the pool stays empty.
-  const found = Math.max(0, Number(run.discovered_games) || 0);
-  const ladder = Math.max(0, Number(run.players) || 0);
-  const read = Math.max(0, Number(run.scanned_players) || 0);
-  const discovery = found ? ` · ${found.toLocaleString()} candidates found`
-    : ladder && run.stage === 'discovering'
-      ? ` · ${read.toLocaleString()} of ${ladder.toLocaleString()} histories read` : '';
-  return `${labels[run.status] || 'Collection status'} · ${progress}${discovery}${stage ? ` · ${stage}` : ''}`;
+  return `${labels[run.status] || 'Collection status'}${stage ? ` · ${stage}` : ''}`;
 }

@@ -215,7 +215,7 @@ function wireTooltip() {
     const shown = D.lastShown || result;
     const sd = shown.deaths[i], sk = shown.kills[i];
     const danger = (sd + 5) / (sd + sk + 10);
-    tip.textContent = `Map cell · ${d} deaths · ${k} kills\n`
+    tip.textContent = `Map cell\n`
       + `Danger ${danger.toFixed(2)} · Opportunity ${(1 - danger).toFixed(2)}`
       + (S.smooth ? ' (smoothed)' : '')
       + (sd + sk < 5 ? '\nRatio suppressed: fewer than 5 events' : '');
@@ -274,26 +274,22 @@ let refreshPromise = null;
 async function refreshDataset() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
-    if (!D.dataset_id) { $('#loading .spin').hidden = false; $('#loadingText').textContent = 'Loading real dataset…'; }
+    if (!D.dataset_id) { $('#loading .spin').hidden = false; $('#loadingText').textContent = 'Loading dataset…'; }
     try {
       const changed = await loadBundle();
       if (changed) setupDatasetControls();
       $('#loading').classList.add('done'); $('#filterMessage').hidden = true;
-      const date = value => new Date(Number(value) * 1000).toLocaleDateString();
-      const window = D.meta.collected_from && D.meta.collected_to
-        ? ` · ${date(D.meta.collected_from)}–${date(D.meta.collected_to)}` : '';
-      $('#datasetInfo').textContent = `Real Riot data · ${D.matches.length.toLocaleString()} games${window} · release ${D.dataset_id}`;
+      $('#datasetInfo').textContent = '';
       schedule();
     } catch (error) {
       if (D.dataset_id) {
-        $('#datasetInfo').textContent = `Showing ${D.matches.length.toLocaleString()} real games from release ${D.dataset_id}. Updated data is temporarily unavailable.`;
+        $('#datasetInfo').textContent = 'Updated data is temporarily unavailable. The map already loaded is still shown.';
       } else {
         $('#loading .spin').hidden = true;
         $('#loadingText').textContent = error.code === 'empty'
-          ? 'No real dataset collected yet. Use Update game data to collect games.'
-          : error.message || 'Real data could not be loaded. Please retry.';
+          ? 'No dataset collected yet. Use Update game data to collect games.'
+          : error.message || 'Data could not be loaded. Please retry.';
         $('#datasetRetry').hidden = false;
-        $('#nStat').textContent = 'No real dataset available';
       }
     }
   })().finally(() => { refreshPromise = null; });

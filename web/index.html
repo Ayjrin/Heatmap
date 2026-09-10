@@ -27,7 +27,7 @@
       developer.riotgames.com, put it in <code>.env</code>, and run <code>scripts/aws_key.py</code> to store it in the
       AWS SSM parameter the collector reads.</p>
     <p id="runStatus" role="status" aria-live="polite">Checking collection status…</p>
-    <progress id="runProgress" hidden aria-label="New games collected"></progress>
+    <progress id="runProgress" hidden aria-label="Collection progress"></progress>
     <p id="runTime" class="pocNote"></p>
     <p id="runError" class="hint" role="status"></p>
   </section>
@@ -74,7 +74,6 @@
 
 <main>
   <div class="topbar">
-    <span class="stat" id="nStat">Waiting for real data</span>
     <span class="warn" id="thinWarn" hidden></span>
     <span class="sp"></span>
     <span class="stat dim" id="gridStat"></span>
@@ -91,7 +90,7 @@
       <canvas id="overlay" width="760" height="760"></canvas>
       <div class="tip" id="tip" hidden></div>
       <div id="loading" role="status">
-        <div class="spin"></div><p id="loadingText">Loading real dataset…</p>
+        <div class="spin"></div><p id="loadingText">Loading dataset…</p>
         <button id="datasetRetry" class="lnk" hidden>Retry loading dataset</button>
       </div>
     </div>
@@ -151,10 +150,6 @@
       <h3>Top zones</h3>
       <ol id="zoneList"></ol>
       <p class="lgnote" id="zoneNote"></p>
-    </div>
-    <div class="zones" id="breakdown">
-      <h3>Breakdown</h3>
-      <ol id="breakList"></ol>
     </div>
   </aside>
 </main>

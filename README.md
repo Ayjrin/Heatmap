@@ -16,15 +16,15 @@ make setup
 make serve
 ```
 
-Open http://localhost:8000. The application starts empty when no real release exists. `make demo` is an alias for this same real-data application and does not generate fixtures.
+Open http://localhost:8000. The application starts empty when no release exists. `make demo` is an alias for this same application and does not generate fixtures.
 
-The **Game data** section has one button, **Update game data**. It refreshes the configured ladder histories and processes the entire deduplicated universe, so it has no target count: it reads every ladder player’s recent history first, then fetches the games it has not already collected. The status line reports discovered candidates during that first stage, because new games necessarily stay at zero until discovery finishes.
+The **Game data** section has one button, **Update game data**. It refreshes the configured ladder histories and processes the entire deduplicated universe, so it has no target count: it reads every ladder player’s recent history first, then fetches the games it has not already collected. The status line names the stage in flight, because discovery reads every ladder history before the first game is fetched.
 
 Cached, rejected, and failed games do not count as new; eligible games with zero kill events do count. Concurrent clicks show the active run.
 
 Discovery is incremental, so a refresh spends its rate limit on games it does not have. Listed match IDs are deduplicated against every game already collected or rejected before they enter the run's pool, and each fully walked history records the end of the window it scanned. Later runs bound the next listing with that watermark, so Riot returns only games played since. A history still holding an unaccounted game — interrupted, depth-capped, or awaiting retry — keeps its previous watermark, so no match ID can be skipped. Lowering `start_time_epoch` widens the window and rescans it rather than leaving the older games hidden.
 
-The bounded `smoke` (50 games) and `small` (250 games) modes still exist behind the API and the CLI for quick verification; they are simply no longer exposed as buttons. A bounded run that cannot be satisfied from available histories reports the actual count and pauses instead of claiming completion.
+The bounded `smoke` and `small` modes still exist behind the API and the CLI for quick verification; they are simply no longer exposed as buttons. A bounded run that cannot be satisfied from available histories records the shortfall and pauses instead of claiming completion.
 
 Equivalent commands are `make smoke`, `make small`, `make full`, and `make status`. Resume a paused run’s original quota with:
 
@@ -144,14 +144,14 @@ Restart Codex to load the new MCP connection. The current session uses the AWS C
 
 ```sh
 make test     # Python integration/transform/controller tests and production JS module tests
-make verify   # Validate the currently published real browser release; absence is a failure
+make verify   # Validate the currently published browser release; absence is a failure
 ```
 
-Current checks: **66 Python tests and 17 JavaScript tests passed**. Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
+Current checks: **68 Python tests and 18 JavaScript tests passed**. Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
 
-The deployed Smoke Test completed 50 new games. The following Small Collection completed another 250 new games and atomically published release `v1-b97d0c7fed80ae1558ec` with 300 unique matches, 16,674 kill/death events, and 3,000 participant rows. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix contains 300 completion markers and no raw-named payloads. The production browser loader verified the decoded 900,568-byte core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the 300-game release. The 300 is exactly 50 + 250 and is not a cap anywhere in the code: a release is the cumulative union of every game collected so far, and at that point only those two bounded runs had finished. **Update game data** is what grows it past 300. A headless Chrome check confirmed the real heatmap, dataset metadata, filters, top zones, breakdown, and completed collection status render on the live site.
+The deployed Smoke Test completed, and the following Small Collection atomically published release `v1-b97d0c7fed80ae1558ec`. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix holds one completion marker per collected match and no raw-named payloads. The production browser loader verified the decoded core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the published release. No cap on release size exists anywhere in the code: a release is the cumulative union of every game collected so far, and **Update game data** is what grows it. A headless Chrome check confirmed the heatmap, filters, top zones, and completed collection status render on the live site.
 
-Tests cover 50 then 250 additional games, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, side-independent binning, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
+Tests cover bounded then incremental collection, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, side-independent binning, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
 
 Remaining analytical limits: frame-derived economy and nearby-player state can be stale by one timeline frame; respawn and objective timing flags use models; hand-authored region boundaries are approximate. These derived attributes should not be treated as directly observed positions or exact timers. History depth and ladder membership constrain the sample, while blank roles retain unknown values rather than inferred lane comparisons.
 
