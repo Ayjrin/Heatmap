@@ -103,7 +103,7 @@ After validation:
 
 - Implement AWS infrastructure with Terraform and Docker, as explicitly requested by the user.
 - The approved Riot credential store is SSM Parameter Store SecureString. Read .env locally and resolve SSM values only inside the running application; never print secret values or put them in Terraform state. Secrets Manager-specific resolution applies only when using Secrets Manager.
-- Serve only verified real Riot data. Synthetic inputs belong in isolated temporary tests, never in web/data or deployed assets.
+- Serve only verified Riot data. Synthetic inputs belong in isolated temporary tests, never in web/data or deployed assets.
 - README.md is the project write-up; do not add a separate take-home document or AI-use examples.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
