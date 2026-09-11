@@ -119,12 +119,30 @@ test('team gold is blue minus red; context and inclusion/exclusion intersect', (
 
 test('zone summaries use exact original events across grid sizes', () => {
   const data = sample(), state = defaults(); state.subject.champ = [{ v: 10, neg: false }];
-  const expected = [{ region: 1, deaths: 3, kills: 2 }, { region: 2, deaths: 1, kills: 0 }];
+  // Region 1 holds five events from two games; region 2 holds one from a third.
+  const expected = [{ region: 1, deaths: 3, kills: 2, games: 2 },
+    { region: 2, deaths: 1, kills: 0, games: 1 }];
   for (const size of [32, 64, 128]) {
     const result = scan(size, data, state);
     assert.deepEqual(result.zones, expected);
     assert.equal(zoneSummary(result, 'deaths')[0].value, 0.75);
     assert.equal(zoneSummary(result, 'danger')[0].value, 8 / 15);
+  }
+});
+
+test('a cell counts the distinct games behind it, not its events', () => {
+  // Five of the six events share one coordinate: three from game 0, two from
+  // game 1. A cell of five events from two games has to say so, because the
+  // colour alone cannot separate one game's massacre from many even trades.
+  const data = sample(), state = defaults();
+  for (const size of [32, 64, 128]) {
+    const result = scan(size, data, state);
+    const busy = data.cell[size][0], lone = data.cell[size][5];
+    // Rows 0-4 are champion kills, so each one is both a death and a kill here.
+    assert.deepEqual([result.deaths[busy], result.kills[busy]], [5, 5]);
+    assert.equal(result.games[busy], 2);
+    assert.equal(result.games[lone], 1);
+    assert.equal(result.games.reduce((sum, n) => sum + n, 0), 3);
   }
 });
 
@@ -192,6 +210,11 @@ test('incomplete downloads and invalid references cannot replace the previous re
   assert.equal(D.cols, original);
   const data = sample(); data.cols.victim_player[0] = 99;
   await assert.rejects(loadBundle(release('invalid-reference', data).fetcher), /invalid metadata/);
+  assert.equal(D.cols, original);
+  // Per-cell and per-zone game counts assume rows arrive grouped by match.
+  // A release that broke that would inflate them silently, so it is refused.
+  const ungrouped = sample(); ungrouped.cols.match_sk = Uint32Array.of(0, 1, 0, 1, 1, 2);
+  await assert.rejects(loadBundle(release('ungrouped', ungrouped).fetcher), /not grouped by game/);
   assert.equal(D.cols, original);
 });
 
