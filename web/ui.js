@@ -1,5 +1,6 @@
 import { D, S, apply, loadBundle, loadExtended, loadMapImage, loadChampionNames,
-  readURL, resetState, schedule } from './app.js';
+  readURL, resetState, schedule, toggleZones } from './app.js';
+import { MIN_CELL, cellDanger, cellEvents } from './engine.mjs';
 import { playerLabel, playerName, playerTag } from './data.mjs';
 import { CollectionController, ACTIVE, runDescription } from './collection.mjs';
 
@@ -199,6 +200,7 @@ function makeSlider(id, key, min, max, format, step = 1, onUse = null) {
 }
 const mmss = seconds => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
 const kgold = gold => `${gold > 0 ? '+' : ''}${(gold / 1000).toFixed(1)}k`;
+const plural = (n, noun) => `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
 
 function wireTooltip() {
   const canvas = $('#map'), tip = $('#tip');
@@ -207,18 +209,22 @@ function wireTooltip() {
     if (!result) return;
     const bx = Math.max(0, Math.min(size - 1, Math.floor((event.clientX - bounds.left) / bounds.width * size)));
     const by = Math.max(0, Math.min(size - 1, Math.floor((1 - (event.clientY - bounds.top) / bounds.height) * size)));
-    const i = by * size + bx, d = result.deaths[i], k = result.kills[i];
-    if (!d && !k) { tip.hidden = true; return; }
-    // Counts are always this cell's exact events. The ratio follows whatever
-    // the map drew, which is the smoothed neighbourhood when Smooth is on, so
-    // the suppression notice agrees with what is or is not painted.
+    const i = by * size + bx, d = result.deaths[i], k = result.kills[i], g = result.games[i];
+    // Counts are always this cell's own exact events and games -- the scale the
+    // colour is standing for. The ratio follows whatever the map drew, which is
+    // the smoothed neighbourhood when Smooth is on, so both the suppression
+    // notice and the ratio agree with what is or is not painted.
     const shown = D.lastShown || result;
-    const sd = shown.deaths[i], sk = shown.kills[i];
-    const danger = (sd + 5) / (sd + sk + 10);
-    tip.textContent = `Map cell\n`
+    const evidence = cellEvents(shown, i);
+    // Smoothing paints cells that hold no events of their own. Reporting the
+    // neighbourhood that coloured them beats a tooltip that silently vanishes
+    // over a visibly shaded cell.
+    if (!d && !k && evidence <= 0) { tip.hidden = true; return; }
+    const danger = cellDanger(shown, i);
+    tip.textContent = `Map cell · ${plural(d, 'death')} · ${plural(k, 'kill')} · ${plural(g, 'game')}\n`
       + `Danger ${danger.toFixed(2)} · Opportunity ${(1 - danger).toFixed(2)}`
-      + (S.smooth ? ' (smoothed)' : '')
-      + (sd + sk < 5 ? '\nRatio suppressed: fewer than 5 events' : '');
+      + (S.smooth ? `\nSmoothed from ~${Math.round(evidence).toLocaleString()} nearby events` : '')
+      + (evidence < MIN_CELL ? `\nRatio suppressed: fewer than ${MIN_CELL} events` : '');
     tip.hidden = false;
     tip.style.left = `${Math.max(0, Math.min(event.clientX - bounds.left + 12, bounds.width - tip.offsetWidth))}px`;
     tip.style.top = `${Math.max(0, Math.min(event.clientY - bounds.top + 12, bounds.height - tip.offsetHeight))}px`;
@@ -260,6 +266,7 @@ function wireControls() {
     $$('.facet').forEach(renderFacet); syncControls(); $('#filterMessage').hidden = true; schedule();
   };
   $('#filterRetry').onclick = () => void ensureExtended();
+  $('#zoneMore').onclick = () => toggleZones();
   const play = $('#sl-time .play'); play.setAttribute('aria-label', 'Play game-time window');
   play.onclick = () => {
     if (timer) { stopPlayback(); return; }
