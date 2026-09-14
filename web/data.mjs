@@ -138,12 +138,20 @@ export async function loadBundle(fetcher = fetch) {
     throw new DatasetError('The dataset contains duplicate or missing identities.');
   const cols = views(core, manifest.core, manifest.rows);
   if (requiredCore.some(name => !cols[name])) throw new DatasetError('The dataset columns are incomplete.');
-  for (let i = 0; i < manifest.rows; i++)
+  // Rows arrive ordered by match, which is what lets a scan count the distinct
+  // games behind a cell without a Set per cell. Check the property rather than
+  // assume it: a release that ever stopped grouping its rows would silently
+  // inflate every per-cell and per-zone game count instead of failing here.
+  let previous = -1;
+  for (let i = 0; i < manifest.rows; i++) {
     if (cols.match_sk[i] >= matches.length || cols.region_sk[i] >= regions.length
       || cols.patch_sk[i] >= (manifest.meta.patches || []).length
       || cols.victim_player[i] >= players.length
       || (cols.cause[i] === 0 && cols.killer_player[i] >= players.length))
       throw new DatasetError('The dataset references invalid metadata.');
+    if (cols.match_sk[i] < previous) throw new DatasetError('The dataset rows are not grouped by game.');
+    previous = cols.match_sk[i];
+  }
   const next = { cols, rows: manifest.rows, meta: manifest.meta, matches, players, champions, regions,
     manifest, base, dataset_id: pointer.dataset_id, extendedLoaded: false, champNames: D.champNames };
   if (S.lanegold) { Object.assign(next.cols, await extendedFor(next, fetcher)); next.extendedLoaded = true; }

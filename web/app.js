@@ -183,13 +183,22 @@ function drawLegend(ratio, scale, r) {
 }
 
 /* ------------------------------------------------------------------ zones */
+/* The list leads with the top few because a ranked list is only readable while
+ * it is short, but every zone that matched the filters is one click away --
+ * truncation is a presentation default here, never the limit of what is on
+ * offer. `zonesExpanded` is deliberately view state and stays out of the URL. */
+const TOP_ZONES = 8;
+let zonesExpanded = false;
+export function toggleZones() { zonesExpanded = !zonesExpanded; schedule(); }
+
 function renderZones(result) {
   const list = $('#zoneList'); list.replaceChildren();
   const summary = zoneSummary(result), ratio = ['danger', 'opportunity'].includes(S.layer);
   $('#zoneNote').textContent = ratio
     ? 'Zone ratios use exact event totals; at least 5 events per zone.'
     : 'Share of events in each map zone. Zone totals are always exact, never smoothed.';
-  for (const zone of summary.slice(0, 8)) {
+  const shown = zonesExpanded ? summary : summary.slice(0, TOP_ZONES);
+  for (const zone of shown) {
     const name = D.regions[zone.region]?.name || 'Unlabelled';
     const item = document.createElement('li'), label = document.createElement('span');
     label.className = 'nm'; label.textContent = name; label.title = name;
@@ -198,10 +207,25 @@ function renderZones(result) {
     bar.append(fill);
     const value = document.createElement('span'); value.className = 'num';
     value.textContent = ratio ? zone.value.toFixed(2) : `${(zone.value * 100).toFixed(1)}%`;
+    item.title = `${name} · ${zone.deaths.toLocaleString()} deaths · ${zone.kills.toLocaleString()} kills`
+      + ` · ${zone.games.toLocaleString()} games`;
     item.append(label, bar, value); list.append(item);
   }
   if (!summary.length) {
     const item = document.createElement('li'); item.textContent = 'No matching events.'; list.append(item);
+  }
+  const more = $('#zoneMore');
+  more.hidden = summary.length <= TOP_ZONES;
+  more.textContent = zonesExpanded
+    ? `Show top ${TOP_ZONES}` : `Show all ${summary.length.toLocaleString()} zones`;
+  more.setAttribute('aria-expanded', String(zonesExpanded));
+
+  const breakdown = $('#breakList'); breakdown.replaceChildren();
+  const total = Number(D.meta.match_count) || D.matches.length;
+  for (const text of [`${result.nD.toLocaleString()} subject deaths`,
+    `${result.nK.toLocaleString()} subject kills`,
+    `${result.nMatch.toLocaleString()} of ${total.toLocaleString()} collected games`]) {
+    const item = document.createElement('li'); item.textContent = text; breakdown.append(item);
   }
 }
 

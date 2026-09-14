@@ -55,6 +55,13 @@ export function scan(size, data = D, state = S) {
   if (state.lanegold && !data.extendedLoaded) throw new Error('Lane gold data is still loading.');
   const c = data.cols, deaths = new Uint32Array(size * size), kills = new Uint32Array(size * size);
   const cells = data.cell[size];
+  // Distinct games per cell and per zone. A release stores its rows grouped by
+  // match (dataset.py orders every wire column by match_sk, and data.mjs checks
+  // that on load), so remembering the last game seen counts each one once
+  // without a Set per cell — 16,384 Sets per scan is not affordable, and a
+  // count of events alone cannot tell one game's massacre from fifty games
+  // trading once each.
+  const games = new Uint32Array(size * size), lastGame = new Int32Array(size * size).fill(-1);
   const zones = new Map(), matchesD = new Set(), matchesK = new Set();
   let nD = 0, nK = 0;
   const within = (value, range) => !range || (value >= range[0] && value <= range[1]);
@@ -70,20 +77,34 @@ export function scan(size, data = D, state = S) {
     const asKiller = c.cause[i] === 0 && actorOk(data, state.subject, i, 'killer')
       && actorOk(data, state.opponent, i, 'victim') && laneOk(i, 'killer');
     if (!asVictim && !asKiller) continue;
-    const region = c.region_sk[i];
-    if (!zones.has(region)) zones.set(region, { region, deaths: 0, kills: 0 });
+    const region = c.region_sk[i], match = c.match_sk[i];
+    if (!zones.has(region)) zones.set(region, { region, deaths: 0, kills: 0, games: 0, lastGame: -1 });
     const zone = zones.get(region);
-    if (asVictim) { deaths[cells[i]]++; nD++; zone.deaths++; matchesD.add(c.match_sk[i]); }
-    if (asKiller) { kills[cells[i]]++; nK++; zone.kills++; matchesK.add(c.match_sk[i]); }
+    if (asVictim) { deaths[cells[i]]++; nD++; zone.deaths++; matchesD.add(match); }
+    if (asKiller) { kills[cells[i]]++; nK++; zone.kills++; matchesK.add(match); }
+    if (lastGame[cells[i]] !== match) { lastGame[cells[i]] = match; games[cells[i]]++; }
+    if (zone.lastGame !== match) { zone.lastGame = match; zone.games++; }
   }
   const nMatch = state.layer === 'deaths' ? matchesD.size : state.layer === 'kills' ? matchesK.size
     : new Set([...matchesD, ...matchesK]).size;
-  return { deaths, kills, nD, nK, nMatch, size, zones: [...zones.values()] };
+  // `lastGame` is scratch for the distinct-game count; it is not part of a zone.
+  return { deaths, kills, games, nD, nK, nMatch, size,
+    zones: [...zones.values()].map(({ lastGame: _, ...zone }) => zone) };
 }
 
 export function pct(arr, p) {
   const values = Array.from(arr).filter(x => x > 0).sort((a, b) => a - b);
   return values.length ? values[Math.min(values.length - 1, Math.floor(values.length * p))] : 0;
+}
+
+/* One cell of an already-drawn grid. `evidence` converts a smoothed local mean
+ * back to the event count the prior and the MIN_CELL floor are defined against;
+ * it is 1 for raw counts. Both the renderer and the tooltip go through these,
+ * so the number quoted for a cell is always the number that was painted. */
+export const cellEvents = (result, i) => (result.deaths[i] + result.kills[i]) * (result.evidence || 1);
+export function cellDanger(result, i) {
+  const w = result.evidence || 1, d = result.deaths[i] * w, k = result.kills[i] * w;
+  return (d + BETA_K / 2) / (d + k + BETA_K);
 }
 
 export function layerField(result, state = S) {
@@ -94,13 +115,9 @@ export function layerField(result, state = S) {
     if (total) for (let i = 0; i < out.length; i++) out[i] = src[i] / total;
     return { out, kind: 'share', lo: 0, hi: pct(out, 0.99) };
   }
-  // `evidence` converts smoothed local means back to the event counts the
-  // prior and the MIN_CELL floor are defined against; it is 1 for raw counts.
-  const w = result.evidence || 1;
   for (let i = 0; i < out.length; i++) {
-    const d = deaths[i] * w, k = kills[i] * w;
-    const danger = (d + BETA_K / 2) / (d + k + BETA_K);
-    out[i] = d + k < MIN_CELL ? NaN : state.layer === 'danger' ? danger : 1 - danger;
+    const danger = cellDanger(result, i);
+    out[i] = cellEvents(result, i) < MIN_CELL ? NaN : state.layer === 'danger' ? danger : 1 - danger;
   }
   return { out, kind: 'ratio', lo: 0, hi: 1 };
 }
