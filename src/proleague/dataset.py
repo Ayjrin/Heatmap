@@ -12,6 +12,7 @@ import gzip
 import hashlib
 import itertools
 import json
+import os
 import sys
 import tempfile
 import time
@@ -49,6 +50,10 @@ PLAYER_SHARD = 8192
 CELL_GRID = GRID_SIZE
 PREFETCH_WORKERS = 16
 PREFETCH_DEPTH = 32
+# DuckDB spills sorts and aggregations to disk, but the joins that assemble the
+# browser table over a few million rows need real memory: 512 MB ran out at
+# ~42k games. The Fargate task has 4 GiB; a laptop rebuild can pass more.
+DUCKDB_MEMORY_LIMIT = os.environ.get("DUCKDB_MEMORY_LIMIT", "1536MB")
 
 # The zone map is content, not code: released labels are only meaningful next to
 # the polygons that produced them. Folding its digest into the dataset id means
@@ -159,7 +164,7 @@ def build_release(store, site, *, run_id="rebuild", before_publish=None, roster=
         work = Path(tmp)
         con = duckdb.connect(str(work / "build.duckdb"))
         try:
-            con.execute("SET memory_limit='512MB'")
+            con.execute(f"SET memory_limit='{DUCKDB_MEMORY_LIMIT}'")
             con.execute(f"SET temp_directory={sql_path(work / 'spill')}")
             _make_table(con, "fact_kill", FACT_COLUMNS)
             _make_table(con, "dim_match", DIM_MATCH_COLUMNS)

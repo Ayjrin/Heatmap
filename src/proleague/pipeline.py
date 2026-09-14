@@ -694,8 +694,12 @@ class Collection:
         except Exception as exc:
             if self.run:
                 self.patch(status="failed", error_type=type(exc).__name__)
+            # The message is kept (truncated) because "OutOfMemoryException"
+            # alone cannot say which build step ran out. No secret reaches an
+            # exception here: keys are never interpolated into errors.
             log.error("%s", json.dumps({"event": "collection_failed", "run_id": self.run_id,
-                       "stage": self.run.get("stage"), "type": type(exc).__name__}))
+                       "stage": self.run.get("stage"), "type": type(exc).__name__,
+                       "message": str(exc)[:400]}))
         finally:
             self.heartbeat_stop.set()
             if self.hb:

@@ -85,11 +85,18 @@ class LocalObjects:
         return []
 
 
+# The release builder reads two objects per match through a thread pool; the
+# pool must hold at least that many connections or boto3 discards and reopens
+# one per call ("Connection pool is full").
+S3_POOL_CONNECTIONS = 32
+
+
 class S3Objects:
     def __init__(self, bucket, client=None):
         if client is None:
             import boto3
-            client = boto3.client("s3")
+            from botocore.config import Config
+            client = boto3.client("s3", config=Config(max_pool_connections=S3_POOL_CONNECTIONS))
         self.client, self.bucket = client, bucket
 
     def get(self, key):
