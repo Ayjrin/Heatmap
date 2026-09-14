@@ -2,7 +2,7 @@ import { D, S, apply, loadBundle, loadExtended, loadMapImage, loadChampionNames,
   readURL, resetState, schedule, toggleZones } from './app.js';
 import { MIN_CELL, cellDanger, cellEvents } from './engine.mjs';
 import { playerLabel, playerName, playerTag } from './data.mjs';
-import { CollectionController, ACTIVE, runDescription } from './collection.mjs';
+import { CollectionController } from './collection.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -320,21 +320,17 @@ async function refreshDataset() {
   return refreshPromise;
 }
 
-function showCollection(controller) {
+// Collection runs on its own and a visitor can do nothing about its progress,
+// so the only thing it owes the page is the newer release it publishes.
+function onCollection(controller) {
   const { run, dataset } = controller.value;
-  $('#runStatus').textContent = runDescription(run);
-  const progress = $('#runProgress'); progress.hidden = !run || !ACTIVE.has(run.status);
-  if (run && run.target != null) { progress.max = Math.max(1, Number(run.target)); progress.value = Math.max(0, Number(run.new_games) || 0); }
-  else progress.removeAttribute('value');
-  $('#runTime').textContent = run?.updated_at ? `Updated ${new Date(run.updated_at * 1000).toLocaleTimeString()}` : '';
-  $('#runError').textContent = controller.message || (typeof run?.error === 'string' ? run.error : '');
   const version = dataset?.dataset_id || run?.published_version;
   if (version && version !== D.dataset_id) void refreshDataset();
 }
 
 async function boot() {
   readURL(); wireControls(); $$('[data-controls]').forEach(el => { el.inert = true; });
-  const controller = new CollectionController({ changed: showCollection });
+  const controller = new CollectionController({ changed: onCollection });
   $('#datasetRetry').onclick = () => void refreshDataset();
   const poll = async () => { await controller.visit(); setTimeout(poll, controller.busy || controller.pending ? 5000 : 15000); };
   void poll();

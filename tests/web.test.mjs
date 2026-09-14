@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { D, S, defaults, buildDerived, scan, layerField, zoneSummary, parseState, stateQuery } from '../web/engine.mjs';
 import { loadBundle, loadExtended, validatePointer, reconcileFilters } from '../web/data.mjs';
-import { CollectionController, runDescription } from '../web/collection.mjs';
+import { CollectionController } from '../web/collection.mjs';
 import { verifyBundle } from '../scripts/verify_bundle.mjs';
 
 // Synthetic inputs exist only in test memory or OS temp dirs. No test reads or
@@ -392,7 +392,7 @@ test('broken streams and oversized downloads never finish progress or replace th
   }
 });
 
-test('collection preflight auth failure stays visible, and polling acknowledges a timed-out start', async () => {
+test('collection preflight auth failure is retained, and polling acknowledges a timed-out start', async () => {
   let method = 'fail'; const controller = new CollectionController({ uuid: () => 'same-id', fetcher: async () => {
     if (method === 'fail') throw new Error('Network failure');
     return new Response(JSON.stringify({ run: { run_id: 'same-id', status: 'auth_required', new_games: 0, target: 50,
@@ -401,29 +401,8 @@ test('collection preflight auth failure stays visible, and polling acknowledges 
   await controller.start('smoke'); assert.ok(controller.pending);
   method = 'ok'; await controller.poll();
   assert.equal(controller.pending, null); assert.equal(controller.busy, false);
-  assert.match(runDescription(controller.value.run), /Riot key needs updating/);
+  assert.equal(controller.value.run.status, 'auth_required');
   assert.equal(controller.value.dataset.count, 250);
-});
-
-test('the run description names its stage and never quotes a game or kill count', () => {
-  const run = { status: 'running', stage: 'discovering', new_games: 0, target: null,
-    discovered_games: 12, players: 1000, scanned_players: 240 };
-  assert.equal(runDescription(run), 'Collecting · discovering');
-  assert.equal(runDescription({ ...run, stage: 'collecting' }), 'Collecting · collecting');
-  assert.doesNotMatch(runDescription(run), /\d/);
-  assert.equal(runDescription(null), 'Ready to collect ranked games.');
-});
-
-test('a rebuild is described by what it republishes, not by games it never collected', () => {
-  const run = { mode: 'rebuild', status: 'running', stage: 'rebuilding', new_games: 0, target: null };
-  // A rebuild collects nothing, so the collection labels read it as 'Collecting'
-  // for work that is neither collecting nor idle.
-  assert.match(runDescription(run), /Rebuilding the published dataset/);
-  assert.match(runDescription({ ...run, status: 'succeeded' }), /Published dataset rebuilt/);
-  assert.match(runDescription({ ...run, status: 'failed' }), /Dataset rebuild failed/);
-  // Only the mode switches the wording; a real collection still reads as one.
-  assert.equal(runDescription({ ...run, mode: 'full', stage: 'discovering' }),
-    'Collecting · discovering');
 });
 
 test('production verifier reads only isolated test releases and rejects synthetic provenance', async () => {
