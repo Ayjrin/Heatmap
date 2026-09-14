@@ -18,9 +18,11 @@ make serve
 
 Open http://localhost:8000. The application starts empty when no release exists. `make demo` is an alias for this same application and does not generate fixtures.
 
-The **Game data** section has one button, **Update game data**. It refreshes the configured ladder histories and processes the entire deduplicated universe, so it has no target count: it reads every ladder player’s recent history first, then fetches the games it has not already collected. The status line names the stage in flight, because discovery reads every ladder history before the first game is fetched.
+Each site visit checks collection status first. If a run is active, the page follows it without checking the key or starting another worker. Otherwise it requests a full refresh: the server reserves ownership, validates the Riot key, and starts collection only when the key is valid. Concurrent visits share the active worker. Interrupted requests retry with the same UUID; a page that has already followed or started a run only polls, even after that run finishes. A new visit can start the next refresh.
 
-Cached, rejected, and failed games do not count as new; eligible games with zero kill events do count. Concurrent clicks show the active run.
+Full collection refreshes the configured ladder histories and processes the deduplicated universe. Cached, rejected, and failed games do not count as new; eligible games with zero kill events do count. The status line names the stage in flight.
+
+Published data loads with a progress bar: metadata lookup, streamed download percentage, games loaded out of the release total, and heatmap preparation. Download percentages use decoded bytes from the manifest, including compressed responses without a Content-Length header. Game counts reflect validated games rather than an estimate from download size. Validation yields between batches so progress can paint. The previous map stays usable during updates, and an incomplete or invalid release never replaces it. Advanced filter data remains lazy unless the URL already needs it.
 
 Discovery is incremental, so a refresh spends its rate limit on games it does not have. Listed match IDs are deduplicated against every game already collected or rejected before they enter the run's pool, and each fully walked history records the end of the window it scanned. Later runs bound the next listing with that watermark, so Riot returns only games played since. A history still holding an unaccounted game — interrupted, depth-capped, or awaiting retry — keeps its previous watermark, so no match ID can be skipped. Lowering `start_time_epoch` widens the window and rescans it rather than leaving the older games hidden.
 
@@ -81,7 +83,7 @@ The browser receives aligned typed-array columns with JSON dictionaries instead 
 
 ## AWS and Docker
 
-Terraform creates private data/site S3 buckets, CloudFront with origin access control, ECR, a Fargate task definition, DynamoDB run state, CloudWatch logs, an API Gateway HTTP API with a Lambda controller, and Athena/Glue tables. The initial worker is ARM64 with 0.5 vCPU and 2 GiB memory. It runs only for a manual collection; there is no scheduled collection.
+Terraform creates private data/site S3 buckets, CloudFront with origin access control, ECR, a Fargate task definition, DynamoDB run state, CloudWatch logs, an API Gateway HTTP API with a Lambda controller, and Athena/Glue tables. The initial worker is ARM64 with 0.5 vCPU and 2 GiB memory. It runs on demand when an idle site visit passes the Riot key check, or through the collection CLI; there is no scheduled collection.
 
 The deployed API has no sign-in requirement, as intended for this proof of concept. It accepts only predefined modes, throttles requests, remembers request UUIDs, and reserves one active worker. ECS launch parameters and the idempotency token are durable before launch. An uncertain launch retains ownership while being reconciled. Task-stop events and status checks recover abandoned runs without releasing another run’s lock.
 
@@ -91,11 +93,11 @@ The deployed API has no sign-in requirement, as intended for this proof of conce
 | `GET /api/status` | `{ "run": { "run_id", "mode", "status", "stage", "new_games", "target", ... }, "dataset": { "dataset_id", "count" } }` |
 | `data/current.json` | `{ "dataset_id", "base", "source_kind": "riot" }` |
 
-The local development server implements the same application API. In AWS, Lambda validates the key before starting Fargate. Missing or rejected credentials return `auth_required` without a task launch. A worker encountering expiry checkpoints, exits, and requires a refreshed key plus a manual trigger. Run statuses are `starting`, `running`, `succeeded`, `paused`, `auth_required`, and `failed`.
+The local development server implements the same application API. In AWS, Lambda validates the key before starting Fargate. Missing or rejected credentials return `auth_required` without a task launch. A worker encountering expiry checkpoints, exits, and requires a refreshed key and a new site visit (or CLI trigger). Run statuses are `starting`, `running`, `succeeded`, `paused`, `auth_required`, and `failed`.
 
 The Riot key is an SSM SecureString. Terraform handles only its name and ARN. `scripts/aws_key.py` validates the local value and uploads it without printing it; neither Terraform state, the image, the site, nor API responses contain the key.
 
-Riot development keys expire 24 hours after they are issued, so the deployed **Update game data** button will eventually refuse to launch. Each click preflights the stored key against Riot first: a rejected or missing key ends the run at `auth_required` before any Fargate task starts, and the page asks for a new key. To recover, regenerate the key at developer.riotgames.com, put it in `.env`, and run `.venv/bin/python scripts/aws_key.py` to overwrite the SSM SecureString; then press the button again. `scripts/aws_key.py --check-only` reports whether the local key is still live without touching SSM.
+Riot development keys expire 24 hours after they are issued. A rejected or missing key ends preflight at `auth_required` before any Fargate task starts. To recover, regenerate the key at developer.riotgames.com, put it in `.env`, and run `.venv/bin/python scripts/aws_key.py` to overwrite the SSM SecureString; then revisit the site. `scripts/aws_key.py --check-only` reports whether the local key is still live without touching SSM.
 
 ```sh
 # Optional local Docker workflow
@@ -147,9 +149,9 @@ make test     # Python integration/transform/controller tests and production JS 
 make verify   # Validate the currently published browser release; absence is a failure
 ```
 
-Current checks: **68 Python tests and 18 JavaScript tests passed**. Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
+Current checks: **80 Python tests and 28 JavaScript tests passed**, JavaScript syntax checks passed, and the existing 300-game Riot release passed the production bundle verifier. The npm commands in `AGENTS.md` are unavailable because this repository has no `package.json`; use `make test`. Visual browser verification was unavailable in this session. Earlier deployment checks confirmed Terraform validates, the ARM64 image builds and runs as a non-root user, and the deployed stack is managed from remote Terraform state. The refreshed Riot key passed preflight and was synced to SSM without printing it.
 
-The deployed Smoke Test completed, and the following Small Collection atomically published release `v1-b97d0c7fed80ae1558ec`. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix holds one completion marker per collected match and no raw-named payloads. The production browser loader verified the decoded core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the published release. No cap on release size exists anywhere in the code: a release is the cumulative union of every game collected so far, and **Update game data** is what grows it. A headless Chrome check confirmed the heatmap, filters, top zones, and completed collection status render on the live site.
+The deployed Smoke Test completed, and the following Small Collection atomically published release `v1-b97d0c7fed80ae1558ec`. Athena found zero duplicate `(match_id, frame_index, event_index)` identities. The curated data prefix holds one completion marker per collected match and no raw-named payloads. The production browser loader verified the decoded core and extended bundle. CloudWatch recorded the run as succeeded, and the public status API reports the published release. No cap on release size exists anywhere in the code: a release is the cumulative union of every game collected so far, and automatic collection is what grows it. A headless Chrome check confirmed the heatmap, filters, top zones, and completed collection status render on the live site.
 
 Tests cover bounded then incremental collection, full history refresh, zero-kill games, exhaustion, expiry before/mid-run, manual recovery, timeline retry, local ownership, request replay, interrupted publication, immutable conflicts, stable player links, side-independent binning, lane gold, exact zones, provenance rejection, and incomplete release downloads. Test fixtures never populate the serving directory.
 

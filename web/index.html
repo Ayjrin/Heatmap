@@ -18,10 +18,7 @@
 
   <section class="grp poc" aria-labelledby="pocTitle">
     <h2 id="pocTitle">Game data</h2>
-    <div class="pocButtons">
-      <button data-mode="full" title="Refresh the ladder and collect every new game discoverable from it. Adds only games not already collected; the current map stays usable while it runs.">Update game data</button>
-    </div>
-    <p class="pocNote">Each update adds new, unique games. Previous results stay available while it runs.</p>
+    <p class="pocNote">New games are collected automatically when you visit. Previous results stay available while collection runs.</p>
     <p id="runStatus" role="status" aria-live="polite">Checking collection status…</p>
     <progress id="runProgress" hidden aria-label="Collection progress"></progress>
     <p id="runTime" class="pocNote"></p>
@@ -78,6 +75,7 @@
 
   <div class="stage">
     <p id="datasetInfo" class="datasetInfo" role="status"></p>
+    <progress id="datasetProgress" hidden aria-label="Loading updated dataset"></progress>
     <div id="filterMessage" class="filterMessage" hidden role="status">
       <span></span> <button id="filterRetry" class="lnk" hidden>Retry filter</button>
     </div>
@@ -86,7 +84,8 @@
       <canvas id="overlay" width="760" height="760"></canvas>
       <div class="tip" id="tip" hidden></div>
       <div id="loading" role="status">
-        <div class="spin"></div><p id="loadingText">Loading dataset…</p>
+        <p id="loadingText">Loading dataset…</p>
+        <progress id="loadingProgress" aria-labelledby="loadingText"></progress>
         <button id="datasetRetry" class="lnk" hidden>Retry loading dataset</button>
       </div>
     </div>

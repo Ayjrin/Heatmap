@@ -116,7 +116,9 @@ def test_same_request_recovers_exact_launch_after_timeout(app):
     assert app.ecs.run_task.call_args_list[0] == app.ecs.run_task.call_args_list[1]
 
 
-def test_second_click_reuses_existing_worker_and_mode(app):
+def test_second_visit_reuses_existing_worker_without_checking_key(app, monkeypatch):
+    check = Mock(return_value="ok")
+    monkeypatch.setattr(control, "preflight", check)
     first = start(app)
     second = start(app, "full")
     assert second["run"]["run_id"] == first["run"]["run_id"]
@@ -124,6 +126,7 @@ def test_second_click_reuses_existing_worker_and_mode(app):
     tokens = {call.kwargs["clientToken"] for call in app.ecs.run_task.call_args_list}
     assert tokens == {first["run"]["run_id"]}
     assert app.ecs.run_task.call_count == 1
+    check.assert_called_once_with(app.ssm)
 
 
 def test_busy_click_retry_after_completion_never_starts_another_run(app):

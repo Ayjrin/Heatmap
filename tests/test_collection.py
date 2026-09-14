@@ -286,10 +286,11 @@ def test_local_api_preflight_and_concurrent_request_replay(tmp_path, monkeypatch
     failed_id = str(uuid.uuid4())
     assert controller.start({"mode": "smoke", "requestId": failed_id})["run"]["status"] == "auth_required"
     spawn.assert_not_called()
-    controller.check = lambda: "ok"
+    controller.check = Mock(return_value="ok")
     first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
     controller.start({"mode": "smoke", "requestId": first_id})
     assert controller.start({"mode": "small", "requestId": second_id})["run"]["run_id"] == first_id
+    controller.check.assert_called_once_with()
     controller.state.update("RUN#" + first_id, status="succeeded")
     process.poll.return_value = 0
     assert controller.start({"mode": "small", "requestId": second_id})["run"]["run_id"] == first_id
