@@ -7,7 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent / "src"))
 from proleague.curated import FACT_COLUMNS
-from proleague.dataset import DIM_MATCH_COLUMNS, DIM_PARTICIPANT_COLUMNS
+from proleague.dataset import DIM_MATCH_COLUMNS, DIM_PARTICIPANT_COLUMNS, DIM_PLAYER_COLUMNS
 
 
 def test_glue_schema_matches_written_parquet():
@@ -15,7 +15,8 @@ def test_glue_schema_matches_written_parquet():
     expected = {
         name: [{"name": field, "type": types[kind]} for field, kind in columns]
         for name, columns in {"fact_kill": FACT_COLUMNS, "dim_match": DIM_MATCH_COLUMNS,
-                              "dim_participant": DIM_PARTICIPANT_COLUMNS}.items()
+                              "dim_participant": DIM_PARTICIPANT_COLUMNS,
+                              "dim_player": DIM_PLAYER_COLUMNS}.items()
     }
     assert json.loads((ROOT / "catalog-schema.json").read_text()) == expected
 

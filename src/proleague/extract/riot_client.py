@@ -154,6 +154,15 @@ class RiotClient:
             method="league-exp-v4.entries",
         ) or []
 
+    def league_entries_by_puuid(self, platform: Platform, puuid: str):
+        """league-v4 -> list[LeagueEntryDTO], one per queue. PLATFORM routed.
+
+        The exact rank of one player. Returns [] when Riot has no entry for the
+        PUUID (404), which the caller records as UNRANKED for solo queue.
+        """
+        return self.get(platform, f"/lol/league/v4/entries/by-puuid/{puuid}",
+                        method="league-v4.entries-by-puuid") or []
+
     def match_ids_by_puuid(self, region: Region, puuid: str, *, queue: int = 420,
                            type_: str = "ranked", start: int = 0, count: int = 100,
                            start_time: int | None = None, end_time: int | None = None):

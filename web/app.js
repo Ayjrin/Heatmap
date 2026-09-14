@@ -1,7 +1,8 @@
 /* Browser rendering for the shared, tested aggregation engine. */
 import { D, S, MAP, BETA_K, MIN_CELL, THIN, MIN_DENSITY, ROLLUPS,
-  scan, layerField, pct, zoneSummary, parseState, stateQuery, resetState } from './engine.mjs';
-import { loadBundle, loadExtended, loadChampionNames, reconcileFilters } from './data.mjs';
+  scan, scanCells, cellsAnswer, layerField, pct, zoneSummary, parseState, stateQuery, resetState } from './engine.mjs';
+import { loadBundle, loadExtended, loadChampionNames, reconcileFilters, ensurePartitions,
+  partsLoaded, extendedReady } from './data.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 
 /* Separable Gaussian, 9-tap. Always applied to raw counts, never to a value
@@ -221,7 +222,7 @@ function renderZones(result) {
   more.setAttribute('aria-expanded', String(zonesExpanded));
 
   const breakdown = $('#breakList'); breakdown.replaceChildren();
-  const total = Number(D.meta.match_count) || D.matches.length;
+  const total = D.matchCount;
   for (const text of [`${result.nD.toLocaleString()} subject deaths`,
     `${result.nK.toLocaleString()} subject kills`,
     `${result.nMatch.toLocaleString()} of ${total.toLocaleString()} collected games`]) {
@@ -233,11 +234,23 @@ function renderZones(result) {
 let pending = null;
 function schedule() { if (!pending) pending = requestAnimationFrame(apply); }
 
+/* Above this, a scan is felt as lag; the note is the trigger for moving the
+ * row scan into a Web Worker. Logged once per page load. */
+const SLOW_SCAN_MS = 100;
+let slowLogged = false;
+
 function apply() {
   pending = null;
-  if (!D.dataset_id || (S.lanegold && !D.extendedLoaded)) return;
+  if (!D.dataset_id) return;
+  // The prerendered cells answer the default view (any set of ranks) exactly
+  // and instantly. Everything else scans the rows of the partitions loaded so
+  // far and asks for the selected ones that are not.
+  const fast = cellsAnswer(S);
+  if (!fast && S.lanegold && !extendedReady(S)) return;
+  const compute = size => fast ? scanCells(size) : scan(size);
+  const started = performance.now();
   let size = S.grid === 'auto' ? 128 : +S.grid;
-  let r = scan(size);
+  let r = compute(size);
   const n = S.layer === 'kills' ? r.nK : S.layer === 'deaths' ? r.nD : r.nD + r.nK;
   if (S.grid === 'auto') {
     // Count layers are share-normalized and blurred, so they read fine when
@@ -250,7 +263,12 @@ function apply() {
     const target = ratio
       ? (ROLLUPS.find(sz => n / (sz * sz) >= MIN_DENSITY) || 32)
       : (n < THIN / 4 ? 32 : n < THIN ? 64 : 128);
-    if (target !== size) { size = target; r = scan(size); }
+    if (target !== size) { size = target; r = compute(size); }
+  }
+  const elapsed = performance.now() - started;
+  if (!fast && elapsed > SLOW_SCAN_MS && !slowLogged) {
+    slowLogged = true;
+    console.info(`Row scan took ${elapsed.toFixed(0)} ms; consider the Web Worker path.`);
   }
   D.lastResult = r; D.lastSize = size;   // the tooltip reads these
   render(r);
@@ -264,6 +282,12 @@ function apply() {
   thin.hidden = nn >= THIN;
   if (!thin.hidden) thin.textContent =
     nn === 0 ? 'No events match these filters.' : `Small sample${auto ? ` · ${size}² grid` : ''}`;
+  // A row scan over a partial release is a preliminary answer; say so until
+  // every selected partition has landed. The cells path is never partial.
+  const parts = partsLoaded(S), prelim = $('#prelim');
+  prelim.hidden = fast || parts.loaded >= parts.total;
+  if (!prelim.hidden) prelim.textContent = `Preliminary · ${parts.loaded} of ${parts.total} partitions`;
+  if (!fast) void ensurePartitions(S);
 
   const ratio = S.layer === 'danger' || S.layer === 'opportunity';
   const anySubject = Object.values(S.subject).some(a => a.length);
@@ -280,4 +304,4 @@ function readURL() {
 }
 
 export { D, S, scan, apply, loadBundle, loadExtended, loadMapImage, loadChampionNames,
-  readURL, layerField, resetState, schedule };
+  ensurePartitions, extendedReady, readURL, layerField, resetState, schedule };

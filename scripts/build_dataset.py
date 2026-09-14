@@ -18,7 +18,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local", action="store_true")
     args = parser.parse_args()
-    state, store, site, _ = runtime(Config.load(), args.local)
+    cfg = Config.load()
+    state, store, site, _ = runtime(cfg, args.local)
     run_id = str(uuid.uuid4())
     state.claim(run_id)
     # The claim excludes collection for as long as the rebuild runs, so it needs
@@ -31,7 +32,10 @@ def main():
                                 "heartbeat_at": started})
     state.put("LATEST", {"run_id": run_id})
     try:
-        published = build_release(store, site, run_id=run_id,
+        # The roster is what turns participants into ranks; without it every
+        # game would publish as "Unknown rank".
+        roster = state.scan(f"PLAYER#{cfg.region}#")
+        published = build_release(store, site, run_id=run_id, roster=roster,
                                   before_publish=lambda: state.heartbeat(run_id))
         state.put("PUBLISHED", dict(published, run_id=run_id, updated_at=int(time.time())))
         state.update("RUN#" + run_id, status="succeeded", stage="complete",

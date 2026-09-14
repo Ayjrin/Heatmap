@@ -33,9 +33,13 @@ from proleague.curated import settled_scope, settled_status  # noqa: E402
 from proleague.pipeline import runtime  # noqa: E402
 from proleague.pipeline_state import OwnershipError  # noqa: E402
 
-# Scratch that only ever describes one run. Ladder membership and history
-# cursors are re-derived on the next run, and RUNMATCH totals survive on the
-# RUN record's new_games plus the run_id stamped into every MATCH record.
+# Scratch that only ever describes one run. Ladder membership, seeding pages,
+# frontier slices and history cursors are re-derived on the next run, and
+# RUNMATCH totals survive on the RUN record's new_games plus the run_id stamped
+# into every MATCH record. `LADDER#{run}#...` covers the per-division seeding
+# markers and the per-round frontier markers as well as the apex tiers. The
+# roster itself (`PLAYER#{region}#{puuid}`: rank, history, appearances,
+# scanned window) is durable data, never scratch, and is left alone.
 SCRATCH = ("RUNPLAYER#", "RUNMATCH#", "LADDER#")
 
 

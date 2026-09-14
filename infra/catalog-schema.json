@@ -177,6 +177,10 @@
     {
       "name": "collected_at",
       "type": "bigint"
+    },
+    {
+      "name": "tier",
+      "type": "string"
     }
   ],
   "dim_participant": [
@@ -211,6 +215,44 @@
     {
       "name": "won",
       "type": "boolean"
+    },
+    {
+      "name": "tier",
+      "type": "string"
+    },
+    {
+      "name": "division",
+      "type": "string"
+    },
+    {
+      "name": "rank_observed_at",
+      "type": "bigint"
+    }
+  ],
+  "dim_player": [
+    {
+      "name": "puuid",
+      "type": "string"
+    },
+    {
+      "name": "tier",
+      "type": "string"
+    },
+    {
+      "name": "division",
+      "type": "string"
+    },
+    {
+      "name": "lp",
+      "type": "bigint"
+    },
+    {
+      "name": "rank_observed_at",
+      "type": "bigint"
+    },
+    {
+      "name": "rank_source",
+      "type": "string"
     }
   ]
 }

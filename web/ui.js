@@ -1,24 +1,53 @@
 import { D, S, apply, loadBundle, loadExtended, loadMapImage, loadChampionNames,
-  readURL, resetState, schedule, toggleZones } from './app.js';
-import { MIN_CELL, cellDanger, cellEvents } from './engine.mjs';
-import { playerLabel, playerName, playerTag } from './data.mjs';
+  extendedReady, readURL, resetState, schedule, toggleZones } from './app.js';
+import { MIN_CELL, UNKNOWN_TIER, cellDanger, cellEvents } from './engine.mjs';
+import { playerName, playerTag } from './data.mjs';
 import { CollectionController } from './collection.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const titleCase = name => name ? name[0] + name.slice(1).toLowerCase() : '';
+export const tierLabel = tier => tier === UNKNOWN_TIER ? 'Unknown rank'
+  : D.tierNames[tier] ? titleCase(D.tierNames[tier]) : `Rank ${tier}`;
+const norm = s => s.toLowerCase().replace(/[^a-z0-9#]/g, '');
+
+/* Player options are built once per loaded name shard and cached per release,
+ * with their search keys normalized up front. A hundred thousand names would
+ * otherwise be rebuilt on every render and re-normalized on every keystroke. */
+let playerCache = { dataset: null, shards: -1, options: [] };
+function playerOptions() {
+  const players = D.players;
+  if (!players) return [];
+  if (playerCache.dataset === D.dataset_id && playerCache.shards === players.namesLoaded) return playerCache.options;
+  const options = [];
+  for (const [shard, names] of [...players.names].sort((a, b) => a[0] - b[0])) {
+    names.forEach((full, i) => {
+      const v = shard * players.shardSize + i, tier = players.tierOf(v);
+      options.push({ v, label: playerName(full), sub: playerTag(full), full, key: norm(full),
+        tier: tier === UNKNOWN_TIER ? '' : tierLabel(tier) });
+    });
+  }
+  playerCache = { dataset: D.dataset_id, shards: players.namesLoaded, options };
+  return options;
+}
+
 const OPTIONS = {
   role: () => (D.meta.roles || []).map((name, i) => ({ v: i, label: name })),
   champ: () => D.champions.map(id => ({ v: id, label: D.champNames.get(id) || `Champion ${id}` })),
   // label is the in-game name; sub is the tagline, shown dimmed and searchable
   // so the ~1% of ladder names that collide stay distinguishable.
-  player: () => D.players.map((player, i) =>
-    ({ v: i, label: playerName(player), sub: playerTag(player), full: playerLabel(player) })),
+  player: () => playerOptions(),
   side: () => [{ v: 100, label: 'Blue side' }, { v: 200, label: 'Red side' }],
+  // Context ranks are the cohorts the release actually holds; actor ranks are
+  // every rank a participant can carry, including one nobody has resolved.
+  tier: group => group === 'context'
+    ? D.tiers.map(tier => ({ v: tier, label: tierLabel(tier) }))
+    : [...D.tierNames.map((_, i) => ({ v: i, label: tierLabel(i) })), { v: UNKNOWN_TIER, label: tierLabel(UNKNOWN_TIER) }],
   region: () => D.regions.map((region, i) => ({ v: i, label: region.name })),
   cause: () => (D.meta.causes || []).map((name, i) => ({ v: i, label: name })),
   patch: () => (D.meta.patches || []).map((name, i) => ({ v: i, label: name })),
 };
-const LABELS = { role: 'Role', champ: 'Champion', player: 'Player', side: 'Side',
+const LABELS = { role: 'Role', champ: 'Champion', player: 'Player', side: 'Side', tier: 'Rank',
   region: 'Zone', cause: 'Death cause', patch: 'Patch' };
 const ALIAS = {
   "kai'sa": 'kaisa', 'kaisa': "kai'sa", 'nunu & willump': 'nunu',
@@ -31,11 +60,10 @@ function fuzzy(q, items) {
   q = q.trim().toLowerCase();
   if (!q) return items.slice(0, 60);
   const alias = ALIAS[q];
-  const norm = s => s.toLowerCase().replace(/[^a-z0-9#]/g, '');
   const nq = norm(q);
   const score = it => {
     const full = optionFull(it).toLowerCase();
-    const l = it.label.toLowerCase(), n = norm(l), nf = norm(full);
+    const l = it.label.toLowerCase(), n = norm(l), nf = it.key ?? norm(full);
     if (l === q || full === q || (alias && l === alias)) return 0;
     if (n.startsWith(nq)) return 1;
     if (n.includes(nq) || nf.startsWith(nq)) return 2;
@@ -59,9 +87,20 @@ function writeOption(el, option, prefix = '') {
   el.append(sub);
 }
 
+/* A player pill needs one name shard; ask for it and redraw when it lands. */
+function playerOption(v, el) {
+  const players = D.players, name = players?.nameOf(v);
+  if (name === null || name === undefined) {
+    if (players?.valid(v)) players.ensureNames(players.shardOf(v)).then(() => { if (el.isConnected) renderFacet(el); }).catch(() => {});
+    return { v, label: 'Loading name…', sub: '' };
+  }
+  const tier = players.tierOf(v);
+  return { v, label: playerName(name), sub: playerTag(name) + (tier === UNKNOWN_TIER ? '' : ` · ${tierLabel(tier)}`), full: name };
+}
+
 function renderFacet(el) {
   const group = el.closest('[data-group]').dataset.group, facet = el.dataset.facet;
-  const entries = S[group][facet], options = OPTIONS[facet]();
+  const entries = S[group][facet], options = OPTIONS[facet](group);
   el.replaceChildren();
   const head = document.createElement('div'), label = document.createElement('span');
   head.className = 'fhead'; label.className = 'fname'; label.textContent = LABELS[facet];
@@ -70,7 +109,8 @@ function renderFacet(el) {
   head.append(label, add); el.append(head);
   const pills = document.createElement('div'); pills.className = 'pills';
   for (const [i, entry] of entries.entries()) {
-    const option = options.find(option => option.v === entry.v) || { label: String(entry.v) };
+    const option = facet === 'player' ? playerOption(entry.v, el)
+      : options.find(option => option.v === entry.v) || { label: String(entry.v) };
     const name = optionFull(option);
     const pill = document.createElement('span'); pill.className = `pill${entry.neg ? ' neg' : ''}`;
     const toggle = document.createElement('button'); toggle.className = 'lbl';
@@ -83,19 +123,21 @@ function renderFacet(el) {
     remove.onclick = () => { entries.splice(i, 1); renderFacet(el); schedule(); };
     pill.append(toggle, remove); pills.append(pill);
   }
-  el.append(pills); add.onclick = () => openTypeahead(el, group, facet, options);
+  el.append(pills); add.onclick = () => openTypeahead(el, group, facet);
 }
 
 let closeTypeahead = () => {};
-function openTypeahead(el, group, facet, options) {
+function openTypeahead(el, group, facet) {
   closeTypeahead();
+  let options = OPTIONS[facet](group);
   const wrap = document.createElement('div'); wrap.className = 'typeahead';
   const input = document.createElement('input'), menu = document.createElement('div');
+  const status = document.createElement('p'); status.className = 'lgnote'; status.hidden = true;
   input.placeholder = `Search ${LABELS[facet].toLowerCase()}…`;
   input.setAttribute('aria-label', `Search ${group} ${LABELS[facet].toLowerCase()}`);
-  menu.className = 'menu'; wrap.append(input, menu); el.append(wrap); input.focus();
-  let selected = 0, shown = [];
-  const close = () => { wrap.remove(); document.removeEventListener('pointerdown', outside); };
+  menu.className = 'menu'; wrap.append(input, status, menu); el.append(wrap); input.focus();
+  let selected = 0, shown = [], debounce = null;
+  const close = () => { wrap.remove(); clearTimeout(debounce); document.removeEventListener('pointerdown', outside); };
   const outside = event => { if (!wrap.contains(event.target)) close(); };
   closeTypeahead = close;
   const pick = option => {
@@ -115,7 +157,13 @@ function openTypeahead(el, group, facet, options) {
     if (!shown.length) { const empty = document.createElement('p'); empty.textContent = 'No matches.'; menu.append(empty); }
     $('.sel', menu)?.scrollIntoView({ block: 'nearest' });
   };
-  input.oninput = () => { selected = 0; draw(); };
+  // Names arrive shard by shard on demand; the list grows as they land. Only
+  // the player search is debounced: it is the one list long enough to notice.
+  input.oninput = () => {
+    selected = 0;
+    if (facet !== 'player') { draw(); return; }
+    clearTimeout(debounce); debounce = setTimeout(draw, 150);
+  };
   input.onkeydown = event => {
     if (event.key === 'Escape') { close(); $('.addbtn', el).focus(); }
     else if (event.key === 'ArrowDown') { selected++; draw(); event.preventDefault(); }
@@ -123,11 +171,19 @@ function openTypeahead(el, group, facet, options) {
     else if (event.key === 'Enter' && shown[selected]) { pick(shown[selected]); event.preventDefault(); }
   };
   document.addEventListener('pointerdown', outside); draw();
+  if (facet === 'player' && D.players && D.players.namesLoaded < D.players.shards) {
+    status.hidden = false; status.textContent = `Loading names… 0/${D.players.shards}`;
+    D.players.loadAllNames((k, total) => {
+      if (!wrap.isConnected) return;
+      status.textContent = k < total ? `Loading names… ${k}/${total}` : '';
+      status.hidden = k >= total; options = OPTIONS.player(); draw();
+    }).catch(() => { if (wrap.isConnected) { status.hidden = false; status.textContent = 'Some names could not be loaded.'; } });
+  }
 }
 
 let filterLoading = null;
 function ensureExtended() {
-  if (D.extendedLoaded) return Promise.resolve();
+  if (extendedReady(S)) return Promise.resolve();
   if (filterLoading) return filterLoading;
   const message = $('#filterMessage'); message.hidden = false;
   $('span', message).textContent = 'Loading lane gold data. The map will update when it is ready.';
@@ -243,10 +299,20 @@ function syncControls() {
   $$('#scaleSeg button').forEach(button => { button.classList.toggle('on', button.dataset.s === S.scale); button.setAttribute('aria-pressed', button.dataset.s === S.scale); });
   $('#smoothChk').checked = S.smooth;
 }
+/* "Challenger to Diamond" from the cohorts the release holds. Unknown-rank
+ * games are in the default view but are not a rung on the ladder. */
+function subtitle() {
+  const known = D.tiers.filter(tier => tier !== UNKNOWN_TIER).sort((a, b) => a - b);
+  if (!known.length) return 'NA solo queue';
+  const top = tierLabel(known[0]), bottom = tierLabel(known.at(-1));
+  return `NA ${top === bottom ? top : `${top} to ${bottom}`} · solo queue`;
+}
+
 function setupDatasetControls() {
   stopPlayback(); closeTypeahead();
   $$('.facet').forEach(renderFacet);
-  maxSeconds = D.matches.reduce((max, match) => Math.max(max, match.duration || 0), 600);
+  $('#subtitle').textContent = subtitle();
+  maxSeconds = Math.max(600, D.maxDuration || 0);
   sliders = {
     time: makeSlider('#sl-time', 'time', 0, maxSeconds, mmss, 15),
     gold: makeSlider('#sl-gold', 'gold', -25000, 25000, kgold, 250),
@@ -278,19 +344,33 @@ function wireControls() {
 }
 
 let refreshPromise = null;
-function showLoading({ stage, loaded, total, gamesLoaded, totalGames }) {
-  const initial = !D.dataset_id;
+const partitionText = parts => parts.total
+  ? `Loaded ${parts.loaded.toLocaleString()} of ${parts.total.toLocaleString()} partitions · ${parts.rows.toLocaleString()} events`
+  : 'Ready';
+function showLoading({ stage, loaded, total, parts }) {
+  const initial = !$('#loading').classList.contains('done');
   const progress = $(initial ? '#loadingProgress' : '#datasetProgress');
   const label = $(initial ? '#loadingText' : '#datasetInfo');
+  const percent = total > 0 ? ` ${Math.floor(loaded / total * 100)}%` : '';
+  const labels = { metadata: 'Finding published games…', cells: `Loading map…${percent}`, ready: 'Ready',
+    partition: partitionText(parts), 'partition-failed': `${partitionText(parts)} · one partition could not be loaded`,
+    advanced: `Downloading advanced filters${percent}`, complete: 'Ready' };
+  if (stage === 'ready') {
+    // The map can paint from the prerendered cells now; rows keep streaming.
+    $('#loading').classList.add('done'); $('#loadingProgress').hidden = true;
+    $('#datasetInfo').textContent = partitionText(parts);
+    return;
+  }
+  if (stage === 'partition' || stage === 'partition-failed') {
+    $('#datasetInfo').textContent = labels[stage];
+    $('#datasetProgress').hidden = parts.loaded >= parts.total;
+    if (parts.total) { $('#datasetProgress').max = parts.total; $('#datasetProgress').value = parts.loaded; }
+    return;
+  }
   progress.hidden = false;
   if (total > 0) { progress.max = total; progress.value = loaded; }
   else progress.removeAttribute('value');
-  const games = totalGames === null ? '' : ` · ${gamesLoaded.toLocaleString()} / ${totalGames.toLocaleString()} games loaded`;
-  const percent = total > 0 ? ` ${Math.floor(loaded / total * 100)}%` : '';
-  const labels = { metadata: 'Finding published games…', download: `Downloading game data${percent}`,
-    games: 'Loading games', advanced: `Downloading advanced filters${percent}`,
-    preparing: 'Preparing heatmap…', complete: 'Ready' };
-  label.textContent = `${labels[stage]}${games}`;
+  label.textContent = labels[stage] || 'Loading…';
   progress.setAttribute('aria-valuetext', label.textContent);
 }
 
@@ -299,10 +379,9 @@ async function refreshDataset() {
   refreshPromise = (async () => {
     $('#datasetRetry').hidden = true;
     try {
-      const changed = await loadBundle(undefined, showLoading);
+      const changed = await loadBundle(undefined, showLoading, () => schedule());
       if (changed) setupDatasetControls();
       $('#loading').classList.add('done'); $('#filterMessage').hidden = true;
-      $('#datasetInfo').textContent = `${D.matches.length.toLocaleString()} / ${D.matches.length.toLocaleString()} games loaded`;
       schedule();
     } catch (error) {
       if (D.dataset_id) {
@@ -314,7 +393,7 @@ async function refreshDataset() {
         $('#datasetRetry').hidden = false;
       }
     } finally {
-      $('#loadingProgress').hidden = true; $('#datasetProgress').hidden = true;
+      $('#loadingProgress').hidden = true;
     }
   })().finally(() => { refreshPromise = null; });
   return refreshPromise;

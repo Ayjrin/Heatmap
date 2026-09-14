@@ -1,11 +1,35 @@
 # Manual Riot ETL configuration; unknown keys are rejected.
 platform: na1
 region: americas
-tiers: [CHALLENGER, GRANDMASTER]
+# Seeded from the ladder and walked, top down. The lowest tier is the floor:
+# players observed below it keep their rank on the roster but are not listed.
+tiers: [CHALLENGER, GRANDMASTER, MASTER, DIAMOND]
 # Empty includes every patch in the discovered histories.
 patches: []
+# Unix seconds. Set to the current patch start for the initial backfill so
+# listing stops at the patch boundary instead of paging through old games.
 start_time_epoch: null
 # Full refreshes this many latest matches per player on each new run.
 matches_per_player: 100
 grid_size: 128
 min_sample_warn: 200
+
+# Riot key kind: dev | personal | production. dev and personal share the same
+# rate windows; a dev key also expires after 24 hours.
+key_kind: personal
+# Requests one run may spend before pausing as budget_exhausted (~20 h here).
+request_budget: 60000
+# Histories listed per run; Diamond rotates by least-recently-listed.
+players_per_run: 12000
+# league-exp pages per non-apex division (~205 entries each). NA Diamond IV and
+# II each exceed 60 pages (12k players); 100 covers every Diamond division.
+seed_pages_per_division: 100
+# Exact per-player rank lookups per run, most-seen unknown players first.
+rank_lookup_budget: 3000
+# Re-observe a player's rank once it is older than this (seconds).
+rank_ttl_seconds: 604800
+# Rounds of frontier -> collect -> rank in full mode; round two walks the
+# players harvested from round one's games.
+max_rounds: 2
+# Complete matches kept per patch; null lets the release grow without a cap.
+max_matches_per_patch: null

@@ -24,8 +24,12 @@ CURATED_PREFIX = "curated/v1/"
 IDENTITY_COLUMNS = [("match_id", "VARCHAR"), ("frame_index", "BIGINT"),
                     ("event_index", "BIGINT"), ("event_ms", "BIGINT"),
                     ("victim_pid", "BIGINT"), ("killer_pid", "BIGINT")]
+# Release-time columns never reach the stored facts: surrogate keys are minted
+# per release, and a player's tier is attributed at build time from the roster.
+RELEASE_ONLY_COLUMNS = {"match_sk", "patch_sk", "victim_player", "killer_player",
+                        "victim_tier", "killer_tier"}
 FACT_COLUMNS = IDENTITY_COLUMNS + [(name, "BIGINT") for name, _ in COLUMNS
-                                   if name not in {"match_sk", "patch_sk", "victim_player", "killer_player"}]
+                                   if name not in RELEASE_ONLY_COLUMNS]
 
 
 def json_bytes(value):
@@ -260,8 +264,14 @@ def read_complete(store, match_id):
     return json.loads(raw) if raw is not None else None
 
 
-def ingest_match(client, region, match_id, store, *, patches, run_id, source_kind="riot"):
-    """Return (completion, rejection). Finished games incur no Riot requests."""
+def ingest_match(client, region, match_id, store, *, patches, run_id, source_kind="riot",
+                 on_context=None):
+    """Return (completion, rejection). Finished games incur no Riot requests.
+
+    `on_context(context)` sees the selected match context once, on both the
+    fresh and the stored-context paths, before the timeline is requested. It
+    may return a rejection reason to stop the ingest there.
+    """
     prefix = match_prefix(match_id)
     complete = read_complete(store, match_id)
     if complete is not None:
@@ -283,6 +293,10 @@ def ingest_match(client, region, match_id, store, *, patches, run_id, source_kin
     context = json.loads(context_bytes)
     if context.get("source_kind") != source_kind or context.get("schema_version") != SCHEMA_VERSION:
         raise ValidationError("Stored match context has incompatible provenance or schema")
+    if on_context is not None:
+        veto = on_context(context)
+        if veto:
+            return None, str(veto)
     # An orphaned facts object contains validated output. Its commit metadata is
     # written first as a small recovery record, avoiding another timeline call.
     pending_bytes = store.get(prefix + "validated.json")

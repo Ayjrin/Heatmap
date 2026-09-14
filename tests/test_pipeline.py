@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from proleague.config import (CAUSE_CHAMPION, F_VICTIM_TEAM_RED, MAP_MAX_X,  # noqa: E402
                               MAP_MAX_Y, MAP_MIN_X, MAP_MIN_Y, NULL_I16,
-                              NULL_U16, ROLE_UNKNOWN)
+                              NULL_U32, ROLE_UNKNOWN)
 from proleague.serve.bundle import TYPES, bytes_per_row  # noqa: E402
 from proleague.transform.geometry import (bin_index, canonical_for_team,  # noqa: E402
                                           canonicalize, distance, to_screen,
@@ -220,7 +220,7 @@ def test_executions_have_no_killer_block(rows):
     for r in execs:
         assert r["killer_champ"] == 0
         assert r["killer_role"] == ROLE_UNKNOWN
-        assert r["killer_player"] == NULL_U16
+        assert r["killer_player"] == NULL_U32
         assert r["killer_gold_diff_lane"] == NULL_I16
 
 
@@ -228,7 +228,7 @@ def test_schema_is_symmetric():
     v = {c[len("victim_"):] for c, _ in COLUMNS if c.startswith("victim_")}
     k = {c[len("killer_"):] for c, _ in COLUMNS if c.startswith("killer_")}
     assert v == k, f"actor blocks differ: {v ^ k}"
-    assert len(v) == 11
+    assert len(v) == 12
 
 
 # ------------------------------------------------ §11.9 danger degeneracy
@@ -334,8 +334,8 @@ def test_core_columns_are_a_subset():
 
 
 def test_row_width_matches_the_plan():
-    assert bytes_per_row() == 54, (
-        f"PROJECT_PLAN §4.2 documents 54 B/row; schema is now {bytes_per_row()}")
+    assert bytes_per_row() == 60, (
+        f"README documents 60 B/row; schema is now {bytes_per_row()}")
 
 
 def test_values_fit_their_columns(rows):
@@ -450,8 +450,9 @@ def test_release_relabels_zones_from_coordinates(tmp_path, monkeypatch):
 
     published = build_release(store, site)
     manifest = json.loads(site.get(f'data/releases/{published["dataset_id"]}/manifest.json'))
-    core = site.get(f'data/releases/{published["dataset_id"]}/core.bin')
-    columns = {c["name"]: c for c in manifest["core"]["columns"]}
+    [part] = manifest["parts"]
+    core = site.get(f'data/releases/{published["dataset_id"]}/{part["core"]["file"]}')
+    columns = {c["name"]: c for c in part["core"]["columns"]}
 
     def column(name, code):
         c = columns[name]

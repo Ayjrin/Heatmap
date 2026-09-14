@@ -55,6 +55,23 @@ BETA_PSEUDOCOUNT = 10.0
 NULL_I16 = -32768
 NULL_U8 = 255
 NULL_U16 = 65535
+NULL_U32 = 2**32 - 1
+
+# Rank tiers, top down. The ordinal is the wire value (`*_tier` columns, the
+# release partition key, the `c.tier` URL parameter) so it must never be
+# reordered; append only. 255 (NULL_U8) is "never observed for this player".
+# UNRANKED is its own value: a lookup that found no solo-queue entry is an
+# answer, and it must not be asked again before the TTL nor confused with a
+# player nobody has looked up yet.
+TIERS = ["CHALLENGER", "GRANDMASTER", "MASTER", "DIAMOND", "EMERALD",
+         "PLATINUM", "GOLD", "SILVER", "BRONZE", "IRON"]
+TIER_UNRANKED = "UNRANKED"
+TIER_NAMES = TIERS + [TIER_UNRANKED]
+TIER_TO_SK = {t: i for i, t in enumerate(TIER_NAMES)}
+TIER_UNKNOWN = NULL_U8
+# Apex tiers have one division and their own league-v4 endpoints.
+APEX_TIERS = ["CHALLENGER", "GRANDMASTER", "MASTER"]
+DIVISIONS = ["I", "II", "III", "IV"]
 
 # Role enum. 255 = unknown: teamPosition is blank in ~0.9% of ranked games,
 # when individualPosition is INVALID (dev-rel #554).
@@ -116,11 +133,9 @@ def respawn_seconds(level: int, minute: float) -> float:
 
 MIN_GAME_DURATION_S = 300
 
-# Dev/personal key windows: 20 req/1s AND 100 req/2min. The second binds at
-# 3,000 req/hr. Both are enforced (see extract/limiter.py).
-DEV_KEY_LIMITS = ((20, 1), (100, 120))
-CALLS_PER_MATCH = 2
-BUNDLE_SIZE = 25             # matches per bronze object; 25*2 = one minute of budget
+# Riot key kinds. Rate windows per kind live in extract/limiter.py; the config
+# only names which one is in use so a swapped key applies on the next run.
+KEY_KINDS = ("dev", "personal", "production")
 
 
 @dataclass
@@ -172,6 +187,9 @@ class Config:
     platform: str = "na1"
     region: str = "americas"
 
+    # Tiers that are seeded from the ladder and whose histories are walked.
+    # The lowest listed tier is the floor; players observed below it are kept
+    # on the roster with their rank but never listed.
     tiers: list[str] = field(default_factory=lambda: ["CHALLENGER", "GRANDMASTER"])
 
     # Patch window. `patches` filters the built dataset; `start_time_epoch`
@@ -187,6 +205,33 @@ class Config:
     # any reason still yields an unbiased sample.
     max_matches: int = 35_499
     matches_per_player: int = 100
+
+    # Riot key kind: "dev" and "personal" share 20 req/s + 100 req/2 min;
+    # only the expiry differs. "production" is 500/10 s + 30,000/10 min.
+    key_kind: str = "personal"
+    # Requests one run may spend before it pauses as `budget_exhausted` and
+    # publishes what it has. 60k is ~20 h on a dev/personal key, inside a dev
+    # key's 24 h life. A resume continues against a fresh budget.
+    request_budget: int = 60_000
+    # Histories listed per run. Apex and Master fit every run; Diamond rotates
+    # through this cap by least-recently-listed, so coverage is even over time.
+    players_per_run: int = 12_000
+    # league-exp pages fetched per non-apex division per run (~205 entries a
+    # page). NA Diamond IV and II each run past 60 pages (12k players); 100
+    # covers every Diamond division. Lower tiers need more or accept a partial
+    # seed, which harvest and lookups then fill in.
+    seed_pages_per_division: int = 100
+    # Exact per-player rank lookups per run, spent frontier-first on the
+    # unranked-or-stale players that appear in the most collected games.
+    rank_lookup_budget: int = 3_000
+    # A rank observation older than this is re-observed when budget allows.
+    rank_ttl_seconds: int = 7 * 86_400
+    # Full-mode rounds of frontier -> collect -> rank. Round two lists the
+    # players round one harvested from collected games and resolved into tier.
+    max_rounds: int = 2
+    # Optional cap on complete matches per patch. None means the release grows
+    # with everything collected; ~25k bounds a patch at a few hundred MB.
+    max_matches_per_patch: int | None = None
 
     grid_size: int = GRID_SIZE
     min_sample_warn: int = THIN_SLICE_EVENTS
@@ -212,7 +257,23 @@ class Config:
                 f"{path.name} has unknown keys: {sorted(unknown)}. "
                 "Stale keys are how a config silently stops matching the code."
             )
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        cfg = cls(**{k: v for k, v in raw.items() if k in known})
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        bad = [t for t in self.tiers if str(t).upper() not in TIERS]
+        if bad or not self.tiers:
+            raise ValueError(f"tiers must be a non-empty subset of {TIERS}; got {self.tiers}")
+        if self.key_kind not in KEY_KINDS:
+            raise ValueError(f"key_kind must be one of {KEY_KINDS}; got {self.key_kind!r}")
+        for name in ("request_budget", "players_per_run", "seed_pages_per_division",
+                     "rank_lookup_budget", "rank_ttl_seconds", "max_rounds"):
+            if not isinstance(getattr(self, name), int) or getattr(self, name) < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.max_matches_per_patch is not None and (
+                not isinstance(self.max_matches_per_patch, int) or self.max_matches_per_patch <= 0):
+            raise ValueError("max_matches_per_patch must be a positive integer or null")
 
 
 PLATFORM_TO_REGION = {
