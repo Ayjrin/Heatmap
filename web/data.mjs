@@ -12,6 +12,33 @@ async function response(url, fetcher = fetch) {
   return result;
 }
 
+// Manifest sizes describe decoded bytes, so progress stays accurate even when
+// CloudFront compresses the response or omits Content-Length.
+async function binary(url, part, fetcher, progress) {
+  if (!Number.isSafeInteger(part.bytes) || part.bytes < 0)
+    throw new DatasetError('The dataset size is invalid.');
+  const result = await response(url, fetcher);
+  if (!result.body) throw new DatasetError('The dataset download is incomplete. Please retry.');
+  const reader = result.body.getReader(), bytes = new Uint8Array(part.bytes);
+  let loaded = 0;
+  try {
+    progress(0, part.bytes);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (loaded + value.byteLength > bytes.length)
+        throw new DatasetError('The dataset download size is invalid.');
+      bytes.set(value, loaded); loaded += value.byteLength;
+      progress(loaded, part.bytes);
+    }
+    if (loaded !== part.bytes) throw new DatasetError('The dataset download is incomplete. Please retry.');
+    return bytes.buffer;
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally { reader.releaseLock(); }
+}
+
 function views(buffer, part, rows) {
   if (buffer.byteLength !== part.bytes) throw new DatasetError('The dataset download is incomplete. Please retry.');
   const types = { u8: Uint8Array, i8: Int8Array, u16: Uint16Array, i16: Int16Array,
@@ -42,10 +69,10 @@ const requiredCore = ['match_sk', 'x', 'y', 'second', 'region_sk', 'patch_sk', '
   'flags', 'team_gold_diff', 'victim_champ', 'victim_role', 'victim_player',
   'killer_champ', 'killer_role', 'killer_player'];
 
-async function extendedFor(data, fetcher) {
+async function extendedFor(data, fetcher, progress = () => {}) {
   const part = data.manifest.extended;
   if (!part || !/^[\w.-]+$/.test(part.file)) throw new DatasetError('The advanced-filter dataset is missing.');
-  const buffer = await (await response(`${data.base}/${part.file}`, fetcher)).arrayBuffer();
+  const buffer = await binary(`${data.base}/${part.file}`, part, fetcher, progress);
   const cols = views(buffer, part, data.rows);
   if (!cols.victim_gold_diff_lane || !cols.killer_gold_diff_lane)
     throw new DatasetError('The lane gold columns are missing.');
@@ -115,7 +142,14 @@ export function reconcileFilters(previous, next, state = S) {
 }
 
 /* Commit only a complete validated release; failures leave the previous map usable. */
-export async function loadBundle(fetcher = fetch) {
+export async function loadBundle(fetcher = fetch, onProgress = null) {
+  let totalGames = null, checkedGames = 0;
+  const report = (stage, loaded = 0, total = null, gamesLoaded = checkedGames) => {
+    checkedGames = gamesLoaded;
+    onProgress?.({ stage, loaded, total, gamesLoaded, totalGames });
+  };
+  const paint = () => onProgress ? new Promise(resolve => setTimeout(resolve, 0)) : Promise.resolve();
+  report('metadata');
   const pointer = validatePointer(await (await response('data/current.json', fetcher)).json());
   if (pointer.dataset_id === D.dataset_id) return false;
   const base = pointer.base;
@@ -125,17 +159,19 @@ export async function loadBundle(fetcher = fetch) {
     throw new DatasetError('The dataset version does not match its release.');
   if (!Number.isSafeInteger(manifest.rows) || manifest.rows < 0 || !manifest.core
     || !/^[\w.-]+$/.test(manifest.core.file)) throw new DatasetError('The dataset is empty or invalid.');
-  const [core, matches, players, champions, regions] = await Promise.all([
-    response(`${base}/${manifest.core.file}`, fetcher).then(r => r.arrayBuffer()),
-    ...['matches', 'players', 'champions', 'regions'].map(file =>
+  const [matches, players, champions, regions] = await Promise.all(
+    ['matches', 'players', 'champions', 'regions'].map(file =>
       response(`${base}/${file}.json`, fetcher).then(r => r.json())),
-  ]);
+  );
   if (![matches, players, champions, regions].every(Array.isArray) || !matches.length)
     throw new DatasetError('The dataset metadata is incomplete.');
   if (new Set(matches.map(match => match.id)).size !== matches.length
     || players.some(player => !playerIdentity(player))
     || new Set(players.map(playerIdentity)).size !== players.length)
     throw new DatasetError('The dataset contains duplicate or missing identities.');
+  totalGames = matches.length;
+  const core = await binary(`${base}/${manifest.core.file}`, manifest.core, fetcher,
+    (loaded, total) => report('download', loaded, total));
   const cols = views(core, manifest.core, manifest.rows);
   if (requiredCore.some(name => !cols[name])) throw new DatasetError('The dataset columns are incomplete.');
   // Rows arrive ordered by match, which is what lets a scan count the distinct
@@ -143,6 +179,8 @@ export async function loadBundle(fetcher = fetch) {
   // assume it: a release that ever stopped grouping its rows would silently
   // inflate every per-cell and per-zone game count instead of failing here.
   let previous = -1;
+  report('games', 0, totalGames);
+  await paint();
   for (let i = 0; i < manifest.rows; i++) {
     if (cols.match_sk[i] >= matches.length || cols.region_sk[i] >= regions.length
       || cols.patch_sk[i] >= (manifest.meta.patches || []).length
@@ -151,14 +189,26 @@ export async function loadBundle(fetcher = fetch) {
       throw new DatasetError('The dataset references invalid metadata.');
     if (cols.match_sk[i] < previous) throw new DatasetError('The dataset rows are not grouped by game.');
     previous = cols.match_sk[i];
+    if (i > 0 && i % 25000 === 0) {
+      // Earlier match indices are fully checked, including zero-event games.
+      report('games', previous, totalGames, previous);
+      await paint();
+    }
   }
   const next = { cols, rows: manifest.rows, meta: manifest.meta, matches, players, champions, regions,
-    manifest, base, dataset_id: pointer.dataset_id, extendedLoaded: false, champNames: D.champNames };
-  if (S.lanegold) { Object.assign(next.cols, await extendedFor(next, fetcher)); next.extendedLoaded = true; }
+    manifest, base, dataset_id: pointer.dataset_id, extendedLoaded: false };
+  report('preparing');
+  await paint();
+  if (S.lanegold) {
+    Object.assign(next.cols, await extendedFor(next, fetcher,
+      (loaded, total) => report('advanced', loaded, total)));
+    next.extendedLoaded = true;
+  }
   buildDerived(next);
   reconcileFilters(D, next);
   Object.assign(D, next, { lastResult: null, lastShown: null });
   extendedPromise = null;
+  report('complete', totalGames, totalGames, totalGames);
   return true;
 }
 

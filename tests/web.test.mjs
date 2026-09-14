@@ -266,6 +266,132 @@ test('default collection fetch keeps the browser-global receiver', async () => {
   }
 });
 
+test('a visit checks status before starting full collection, and completion does not restart it', async () => {
+  const calls = []; let run = null;
+  const controller = new CollectionController({ uuid: () => 'visit-1', fetcher: async (url, options) => {
+    calls.push(url);
+    if (url === '/api/runs') {
+      assert.deepEqual(JSON.parse(options.body), { mode: 'full', requestId: 'visit-1' });
+      run = { run_id: 'visit-1', status: 'starting' };
+    }
+    return Response.json({ run, dataset: null });
+  } });
+  await Promise.all([controller.visit(), controller.visit()]);
+  assert.deepEqual(calls, ['/api/status', '/api/runs']);
+  run.status = 'succeeded'; await controller.visit(); await controller.visit();
+  assert.equal(calls.filter(url => url === '/api/runs').length, 1);
+});
+
+test('visits leave active runs alone even after they finish', async () => {
+  for (const status of ['starting', 'running']) {
+    let run = { run_id: 'other-visitor', status };
+    const controller = new CollectionController({ fetcher: async url => {
+      assert.equal(url, '/api/status'); return Response.json({ run });
+    } });
+    await controller.visit();
+    run = { ...run, status: 'succeeded' }; await controller.visit();
+    assert.equal(controller.visitComplete, true);
+  }
+});
+
+test('failed or malformed status never authorizes a launch; a later successful check can', async () => {
+  for (const payload of [undefined, {}, { run: { run_id: 'unknown', status: 'unknown' } }]) {
+    let healthy = false, starts = 0;
+    const controller = new CollectionController({ uuid: () => 'visit', fetcher: async url => {
+      if (url === '/api/runs') { starts++; return Response.json({ run: null }); }
+      if (healthy) return Response.json({ run: null });
+      if (!payload) throw new Error('offline');
+      return Response.json(payload);
+    } });
+    await controller.visit(); assert.equal(starts, 0);
+    healthy = true; await controller.visit(); assert.equal(starts, 1);
+  }
+});
+
+test('automatic launch retries reuse their UUID and stop on an expired key', async () => {
+  const requests = []; let run = null;
+  const controller = new CollectionController({ uuid: () => 'same-visit', fetcher: async (url, options) => {
+    if (url === '/api/runs') {
+      requests.push(JSON.parse(options.body));
+      if (requests.length === 1) throw new Error('response lost');
+      run = { run_id: 'same-visit', status: 'auth_required', error: 'Riot key needs updating' };
+    }
+    return Response.json({ run });
+  } });
+  await controller.visit(); assert.ok(controller.pending);
+  await controller.visit(); await controller.visit();
+  assert.equal(requests.length, 2); assert.deepEqual(requests[0], requests[1]);
+  assert.equal(controller.value.run.status, 'auth_required');
+  assert.equal(controller.pending, null);
+});
+
+test('status can acknowledge a lost launch response without another POST', async () => {
+  let run = null, starts = 0;
+  const controller = new CollectionController({ uuid: () => 'lost-response', fetcher: async url => {
+    if (url === '/api/runs') {
+      starts++; run = { run_id: 'lost-response', status: 'succeeded' };
+      throw new Error('connection lost after completion');
+    }
+    return Response.json({ run });
+  } });
+  await controller.visit(); await controller.visit(); await controller.visit();
+  assert.equal(starts, 1); assert.equal(controller.pending, null);
+});
+
+test('streamed download reports decoded byte progress, then actual loaded games', async () => {
+  const live = release('streamed'), updates = [];
+  const bytes = live.files.get(`${live.base}/core.bin`);
+  const fetcher = url => url.endsWith('/core.bin') ? Promise.resolve(new Response(new ReadableStream({
+    start(controller) {
+      for (let i = 0; i < bytes.length; i += 23) controller.enqueue(bytes.subarray(i, i + 23));
+      controller.close();
+    },
+  }), { headers: { 'content-length': '1', 'content-encoding': 'gzip' } })) : live.fetcher(url);
+  await loadBundle(fetcher, update => updates.push(update));
+  const downloads = updates.filter(update => update.stage === 'download');
+  assert.ok(downloads.some(update => update.loaded > 0 && update.loaded < bytes.length));
+  assert.ok(downloads.every(update => update.total === bytes.length && update.gamesLoaded === 0));
+  assert.equal(downloads.at(-1).loaded, bytes.length);
+  assert.deepEqual(updates.at(-1), { stage: 'complete', loaded: 4, total: 4, gamesLoaded: 4, totalGames: 4 });
+  assert.ok(updates.some(update => update.stage === 'preparing'));
+});
+
+test('game validation yields between batches and counts zero-event games in the total', async () => {
+  const data = sample(), rows = 60000;
+  for (const [key, values] of Object.entries(data.cols)) {
+    data.cols[key] = new values.constructor(rows).fill(values[0]);
+  }
+  data.rows = rows;
+  for (let i = 0; i < rows; i++) data.cols.match_sk[i] = Math.floor(i / 20000);
+  let painted = false;
+  const updates = [];
+  await loadBundle(release('batched', data).fetcher, update => {
+    updates.push(update);
+    if (update.stage === 'games' && update.gamesLoaded === 0) setTimeout(() => { painted = true; }, 0);
+    if (update.stage === 'games' && update.gamesLoaded > 0) assert.equal(painted, true);
+  });
+  assert.deepEqual(updates.filter(update => update.stage === 'games').map(update => update.gamesLoaded), [0, 1, 2]);
+  assert.equal(updates.at(-1).gamesLoaded, 4);
+});
+
+test('broken streams and oversized downloads never finish progress or replace the previous map', async () => {
+  await loadBundle(release('previous').fetcher); const original = D.cols;
+  for (const kind of ['truncated', 'oversized', 'broken']) {
+    const live = release(kind), updates = [];
+    const bytes = live.files.get(`${live.base}/core.bin`);
+    const fetcher = url => url.endsWith('/core.bin') ? Promise.resolve(new Response(new ReadableStream({
+      start(controller) {
+        if (kind === 'broken') { controller.error(new Error('connection lost')); return; }
+        controller.enqueue(kind === 'oversized' ? new Uint8Array(bytes.length + 1) : bytes.subarray(0, 10));
+        controller.close();
+      },
+    }))) : live.fetcher(url);
+    await assert.rejects(loadBundle(fetcher, update => updates.push(update)));
+    assert.equal(D.cols, original);
+    assert.ok(!updates.some(update => update.stage === 'complete'));
+  }
+});
+
 test('collection preflight auth failure stays visible, and polling acknowledges a timed-out start', async () => {
   let method = 'fail'; const controller = new CollectionController({ uuid: () => 'same-id', fetcher: async () => {
     if (method === 'fail') throw new Error('Network failure');

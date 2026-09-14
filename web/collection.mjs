@@ -7,6 +7,7 @@ export class CollectionController {
     this.fetcher = fetcher; this.uuid = uuid; this.changed = changed;
     this.value = { run: null, dataset: null }; this.pending = null;
     this.sending = false; this.message = ''; this.polling = null;
+    this.visitComplete = false; this.visiting = null;
   }
   get busy() { return this.sending || ACTIVE.has(this.value.run?.status); }
 
@@ -20,7 +21,10 @@ export class CollectionController {
         error.retryable = body.retryable !== false && result.status !== 400;
         throw error;
       }
-      if (!body || !Object.hasOwn(body, 'run')) throw new Error('The collection service returned an invalid response.');
+      if (!body || !Object.hasOwn(body, 'run') || (body.run !== null &&
+        (!body.run || typeof body.run.run_id !== 'string' ||
+          !['starting', 'running', 'succeeded', 'failed', 'paused', 'auth_required'].includes(body.run.status))))
+        throw new Error('The collection service returned an invalid response.');
       return body;
     } catch (error) {
       if (error.name === 'AbortError') throw new Error('The request timed out. Retry to check the same collection.');
@@ -30,17 +34,33 @@ export class CollectionController {
 
   accept(value) {
     this.value = value; this.message = '';
-    if (this.pending && value.run?.run_id === this.pending.requestId) this.pending = null;
+    if (this.pending && value.run?.run_id === this.pending.requestId) {
+      this.pending = null; this.visitComplete = true;
+    }
     this.changed(this);
   }
 
   poll() {
     if (this.polling) return this.polling;
-    this.polling = this.api('/api/status').then(value => this.accept(value)).catch(() => {
+    this.polling = this.api('/api/status').then(value => { this.accept(value); return true; }).catch(() => {
       this.message = 'Collection status is unavailable. It will retry automatically.';
       this.changed(this);
+      return false;
     }).finally(() => { this.polling = null; });
     return this.polling;
+  }
+
+  // One collection decision per visit. Polling a completed run must not start
+  // an endless collection loop; uncertain requests retain their original UUID.
+  visit() {
+    if (this.visiting) return this.visiting;
+    this.visiting = (async () => {
+      if (!await this.poll() || this.visitComplete) return;
+      if (this.busy) { this.visitComplete = true; this.pending = null; return; }
+      await this.start('full');
+      if (!this.pending) this.visitComplete = true;
+    })().finally(() => { this.visiting = null; });
+    return this.visiting;
   }
 
   async start(mode) {
@@ -55,7 +75,7 @@ export class CollectionController {
     } catch (error) {
       if (error.retryable === false) this.pending = null;
       this.message = this.pending
-        ? `${error.message} Click the same collection button to retry safely.` : error.message;
+        ? `${error.message} Retrying automatically.` : error.message;
     } finally { this.sending = false; this.changed(this); }
   }
 }

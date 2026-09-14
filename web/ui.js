@@ -278,26 +278,43 @@ function wireControls() {
 }
 
 let refreshPromise = null;
+function showLoading({ stage, loaded, total, gamesLoaded, totalGames }) {
+  const initial = !D.dataset_id;
+  const progress = $(initial ? '#loadingProgress' : '#datasetProgress');
+  const label = $(initial ? '#loadingText' : '#datasetInfo');
+  progress.hidden = false;
+  if (total > 0) { progress.max = total; progress.value = loaded; }
+  else progress.removeAttribute('value');
+  const games = totalGames === null ? '' : ` · ${gamesLoaded.toLocaleString()} / ${totalGames.toLocaleString()} games loaded`;
+  const percent = total > 0 ? ` ${Math.floor(loaded / total * 100)}%` : '';
+  const labels = { metadata: 'Finding published games…', download: `Downloading game data${percent}`,
+    games: 'Loading games', advanced: `Downloading advanced filters${percent}`,
+    preparing: 'Preparing heatmap…', complete: 'Ready' };
+  label.textContent = `${labels[stage]}${games}`;
+  progress.setAttribute('aria-valuetext', label.textContent);
+}
+
 async function refreshDataset() {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
-    if (!D.dataset_id) { $('#loading .spin').hidden = false; $('#loadingText').textContent = 'Loading dataset…'; }
+    $('#datasetRetry').hidden = true;
     try {
-      const changed = await loadBundle();
+      const changed = await loadBundle(undefined, showLoading);
       if (changed) setupDatasetControls();
       $('#loading').classList.add('done'); $('#filterMessage').hidden = true;
-      $('#datasetInfo').textContent = '';
+      $('#datasetInfo').textContent = `${D.matches.length.toLocaleString()} / ${D.matches.length.toLocaleString()} games loaded`;
       schedule();
     } catch (error) {
       if (D.dataset_id) {
         $('#datasetInfo').textContent = 'Updated data is temporarily unavailable. The map already loaded is still shown.';
       } else {
-        $('#loading .spin').hidden = true;
         $('#loadingText').textContent = error.code === 'empty'
-          ? 'No dataset collected yet. Use Update game data to collect games.'
+          ? 'No dataset published yet. Collection starts automatically when a valid Riot key is available.'
           : error.message || 'Data could not be loaded. Please retry.';
         $('#datasetRetry').hidden = false;
       }
+    } finally {
+      $('#loadingProgress').hidden = true; $('#datasetProgress').hidden = true;
     }
   })().finally(() => { refreshPromise = null; });
   return refreshPromise;
@@ -305,9 +322,6 @@ async function refreshDataset() {
 
 function showCollection(controller) {
   const { run, dataset } = controller.value;
-  $$('.pocButtons button').forEach(button => {
-    button.disabled = controller.busy || !!(controller.pending && controller.pending.mode !== button.dataset.mode);
-  });
   $('#runStatus').textContent = runDescription(run);
   const progress = $('#runProgress'); progress.hidden = !run || !ACTIVE.has(run.status);
   if (run && run.target != null) { progress.max = Math.max(1, Number(run.target)); progress.value = Math.max(0, Number(run.new_games) || 0); }
@@ -321,12 +335,12 @@ function showCollection(controller) {
 async function boot() {
   readURL(); wireControls(); $$('[data-controls]').forEach(el => { el.inert = true; });
   const controller = new CollectionController({ changed: showCollection });
-  $$('.pocButtons button').forEach(button => { button.onclick = () => void controller.start(button.dataset.mode); });
   $('#datasetRetry').onclick = () => void refreshDataset();
-  const poll = async () => { await controller.poll(); setTimeout(poll, controller.busy ? 5000 : 15000); };
+  const poll = async () => { await controller.visit(); setTimeout(poll, controller.busy || controller.pending ? 5000 : 15000); };
   void poll();
-  await Promise.all([loadChampionNames(), loadMapImage()]);
-  await refreshDataset();
+  await Promise.all([loadChampionNames(), loadMapImage(), refreshDataset()]);
+  if (D.dataset_id) $$('.facet').forEach(renderFacet);
+  schedule();
   window.addEventListener('popstate', async () => {
     readURL();
     if (D.dataset_id) { setupDatasetControls(); if (S.lanegold) await ensureExtended(); schedule(); }
