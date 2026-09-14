@@ -29,13 +29,18 @@ TERMINAL = {"auth_required", "failed", "succeeded", "paused"}
 # the progress that discovered_games cannot.
 PUBLIC_FIELDS = ("run_id", "mode", "status", "stage", "new_games", "target",
                  "started_at", "updated_at", "published_version", "discovered_games",
-                 "players", "scanned_players")
+                 "players", "scanned_players", "requests_used", "request_budget",
+                 "roster_players", "rank_lookups", "round")
 ERRORS = {
     "auth_required": ("Riot rejected the API key. Development keys expire 24 hours after they are issued. "
                       "Get a fresh key at developer.riotgames.com and store it in the AWS SSM parameter "
                       "with scripts/aws_key.py before starting another manual run."),
     "failed": "Collection stopped. Completed games were saved; check the private run logs.",
     "paused": "Collection paused. Completed games were saved and can be resumed manually.",
+}
+STAGE_ERRORS = {
+    "budget_exhausted": ("Collection spent its request budget for this run. Completed games were published; "
+                         "a resume continues the same run against a fresh budget."),
 }
 
 
@@ -203,7 +208,7 @@ class Controller:
                     break
         public = {key: run.get(key) for key in PUBLIC_FIELDS if key in run} if run else None
         if public and public.get("status") in ERRORS and public.get("mode") != "rebuild":
-            public["error"] = ERRORS[public["status"]]
+            public["error"] = STAGE_ERRORS.get(public.get("stage"), ERRORS[public["status"]])
         published = self.store.get("PUBLISHED")
         dataset = {key: published[key] for key in ("dataset_id", "count") if key in published} if published else None
         return {"run": public, "dataset": dataset}

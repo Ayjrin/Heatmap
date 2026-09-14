@@ -1,6 +1,6 @@
 """One match + timeline -> one flat row per CHAMPION_KILL.
 
-This is the collapse: ~2 MB of timeline JSON becomes ~28 rows of 54 bytes.
+This is the collapse: ~2 MB of timeline JSON becomes ~28 rows of 60 bytes.
 Everything a filter can ask about is a scalar column computed exactly once,
 here, offline, against immutable inputs.
 
@@ -19,7 +19,7 @@ from ..config import (CAUSE_CHAMPION, CAUSE_MINION, CAUSE_MONSTER, CAUSE_TURRET,
                       CAUSE_UNKNOWN, F_FIRST_BLOOD, F_POSITION_IMPUTED, F_TRADE,
                       F_UNDER_TURRET, F_VICTIM_TEAM_RED, F_VICTIM_WON,
                       ISOLATION_BUCKET, NEARBY_RADIUS, NULL_I16, NULL_U8,
-                      NULL_U16, OBJ_BARON, OBJ_DRAGON, OBJ_ELDER, OBJ_HERALD,
+                      NULL_U32, OBJ_BARON, OBJ_DRAGON, OBJ_ELDER, OBJ_HERALD,
                       ROLE_TO_SK, ROLE_UNKNOWN, SINCE_DEATH_STEP,
                       SINCE_OBJECTIVE_STEP, TRADE_WINDOW_S, respawn_seconds)
 from .geometry import distance, under_turret
@@ -390,12 +390,17 @@ def _fill_actor(row: dict, prefix: str, actor: Participant | None,
                 actors: dict[int, _Actor], parts: dict[int, Participant],
                 frame: dict, opp: dict[int, int | None], t_ms: int,
                 player_sk: dict[str, int], interval: int) -> None:
-    """Populate one 16-byte actor block. Nulls out cleanly for executions."""
+    """Populate one actor block. Nulls out cleanly for executions.
+
+    `_tier` is always null here: a player's rank is attributed at release time
+    from the roster, never stored in the facts.
+    """
     if actor is None:
         row.update({
             f"{prefix}_champ": 0,
             f"{prefix}_role": ROLE_UNKNOWN,
-            f"{prefix}_player": NULL_U16,
+            f"{prefix}_player": NULL_U32,
+            f"{prefix}_tier": NULL_U8,
             f"{prefix}_level": NULL_U8,
             f"{prefix}_gold_diff_lane": NULL_I16,
             f"{prefix}_cs_diff_lane": NULL_I16,
@@ -438,8 +443,9 @@ def _fill_actor(row: dict, prefix: str, actor: Participant | None,
     row.update({
         f"{prefix}_champ": actor.champ_id,
         f"{prefix}_role": actor.role_sk,
-        f"{prefix}_player": player_sk.get(actor.riot_id, NULL_U16)
-        if actor.riot_id else NULL_U16,
+        f"{prefix}_player": player_sk.get(actor.riot_id, NULL_U32)
+        if actor.riot_id else NULL_U32,
+        f"{prefix}_tier": NULL_U8,
         f"{prefix}_level": _u8(a.level),
         f"{prefix}_gold_diff_lane": NULL_I16 if (gold is None or o_gold is None)
         else _i16(gold - o_gold),
@@ -463,16 +469,18 @@ COLUMNS: list[tuple[str, str]] = [
     ("cause", "u8"), ("assists", "u8"), ("flags", "u8"),
     ("alive_counts", "u8"), ("objectives_up", "u8"), ("since_objective", "u8"),
     ("bounty", "u16"), ("team_gold_diff", "i16"),
-    ("victim_champ", "u16"), ("victim_role", "u8"), ("victim_player", "u16"),
+    ("victim_champ", "u16"), ("victim_role", "u8"), ("victim_player", "u32"),
     ("victim_level", "u8"), ("victim_gold_diff_lane", "i16"),
     ("victim_cs_diff_lane", "i16"), ("victim_isolation", "u8"),
     ("victim_enemies_near", "u8"), ("victim_ordinal", "u8"),
     ("victim_since_prev_death", "u8"), ("victim_lane_opp_champ", "u16"),
-    ("killer_champ", "u16"), ("killer_role", "u8"), ("killer_player", "u16"),
+    ("victim_tier", "u8"),
+    ("killer_champ", "u16"), ("killer_role", "u8"), ("killer_player", "u32"),
     ("killer_level", "u8"), ("killer_gold_diff_lane", "i16"),
     ("killer_cs_diff_lane", "i16"), ("killer_isolation", "u8"),
     ("killer_enemies_near", "u8"), ("killer_ordinal", "u8"),
     ("killer_since_prev_death", "u8"), ("killer_lane_opp_champ", "u16"),
+    ("killer_tier", "u8"),
 ]
 
 # Columns the default view and every headline filter need. Split out so first
@@ -480,6 +488,6 @@ COLUMNS: list[tuple[str, str]] = [
 CORE_COLUMNS = {
     "match_sk", "x", "y", "second", "region_sk", "patch_sk",
     "cause", "assists", "flags", "team_gold_diff",
-    "victim_champ", "victim_role", "victim_player",
-    "killer_champ", "killer_role", "killer_player",
+    "victim_champ", "victim_role", "victim_player", "victim_tier",
+    "killer_champ", "killer_role", "killer_player", "killer_tier",
 }

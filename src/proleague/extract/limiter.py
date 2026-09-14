@@ -32,6 +32,11 @@ from dataclasses import dataclass, field
 # (count, window_seconds) for a development / personal key. RIOT_LOL_API.md §1.
 DEV_KEY_LIMITS: tuple[tuple[int, int], ...] = ((20, 1), (100, 120))
 PROD_KEY_LIMITS: tuple[tuple[int, int], ...] = ((500, 10), (30_000, 600))
+# A personal key has the same windows as a development key; it only stops
+# expiring every 24 hours. Keyed by Config.key_kind.
+KEY_LIMITS: dict[str, tuple[tuple[int, int], ...]] = {
+    "dev": DEV_KEY_LIMITS, "personal": DEV_KEY_LIMITS, "production": PROD_KEY_LIMITS,
+}
 
 # Leave a little headroom so a clock skew against Riot's window boundary does
 # not turn into a 429 storm.
@@ -154,10 +159,15 @@ class RateLimiter:
                 continue
             w.prune(now)
             # Riot counts more than we do -> backfill phantom hits so our
-            # window is at least as conservative as theirs.
+            # window is at least as conservative as theirs. They go on the
+            # newest end: the log is a time-ordered deque and prune() only
+            # pops from the oldest end, so a phantom stamped `now` at the
+            # front would pin every older hit behind it for a whole window
+            # and stall the crawler for 120 s each time the counts differ by
+            # one.
             deficit = used - len(w.hits)
             for _ in range(max(0, deficit)):
-                w.hits.appendleft(now)
+                w.hits.append(now)
 
     def snapshot(self) -> dict:
         """Current usage per window, for logging and the end-of-run report."""

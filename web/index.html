@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ProLeague Heatmap — solo queue kill/death maps</title>
-<meta name="description" content="Where NA Challenger and Grandmaster players win and lose fights on Summoner's Rift.">
+<meta name="description" content="Where NA solo queue players from Challenger down to Diamond win and lose fights on Summoner's Rift, filterable by rank.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="app.css">
 </head>
@@ -13,7 +13,7 @@
 <aside id="rail">
   <header>
     <h1>ProLeague Heatmap</h1>
-    <p class="sub">NA Challenger + Grandmaster · solo queue</p>
+    <p class="sub" id="subtitle">NA solo queue</p>
   </header>
 
   <section class="grp" data-controls>
@@ -32,6 +32,7 @@
     <div class="facet" data-facet="role"></div>
     <div class="facet" data-facet="champ"></div>
     <div class="facet" data-facet="player"></div>
+    <div class="facet" data-facet="tier"></div>
     <div class="facet" data-facet="side"></div>
   </section>
 
@@ -40,10 +41,12 @@
     <div class="facet" data-facet="role"></div>
     <div class="facet" data-facet="champ"></div>
     <div class="facet" data-facet="player"></div>
+    <div class="facet" data-facet="tier"></div>
   </section>
 
   <section class="grp" data-controls data-group="context">
     <h2>Context</h2>
+    <div class="facet" data-facet="tier"></div>
     <div class="facet" data-facet="region"></div>
     <div class="facet" data-facet="cause"></div>
     <div class="facet" data-facet="patch"></div>
@@ -53,12 +56,14 @@
   <footer>
     <button class="lnk" id="resetBtn" data-controls>Reset all filters</button>
     <p class="tos">Not endorsed by Riot Games. Solo queue — not professional play.</p>
+    <p class="tos">Ranks are the ladder position observed when a player's games were collected, not at match time. A game's rank is the median rank of its known players.</p>
   </footer>
 </aside>
 
 <main>
   <div class="topbar">
     <span class="warn" id="thinWarn" hidden></span>
+    <span class="warn" id="prelim" hidden></span>
     <span class="sp"></span>
     <span class="stat dim" id="gridStat"></span>
     <button class="tb" id="themeBtn" aria-label="Toggle color theme">☀</button>

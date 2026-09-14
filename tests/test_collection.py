@@ -133,8 +133,9 @@ def test_unsettled_match_holds_the_watermark_until_a_later_run_retries_it(setup,
     first = run(client, "full")
     assert (first["status"], first["stage"], first["new_games"]) == ("paused", "retry_required", 2)
     # A history holding an unaccounted match must not be watermarked past it,
-    # or the retry would never be rediscovered by a later run.
-    assert state.get(PLAYER_MARK) is None
+    # or the retry would never be rediscovered by a later run. The roster
+    # record itself exists (seeding wrote the rank); it just carries no window.
+    assert "scanned_to" not in (state.get(PLAYER_MARK) or {})
     second = run(client, "full")
     assert (second["status"], second["new_games"]) == ("succeeded", 1)
     assert set(commits) == {"NA1_0", "NA1_1", "NA1_2"}
@@ -267,13 +268,21 @@ def test_timeline_retry_commit_replay_and_zero_event_release(tmp_path):
     assert client.match.call_count == 1 and client.timeline.call_count == 2
     published = build_release(store, site)
     assert (published["count"], published["rows"]) == (1, 0)
-    players = json.loads(site.get(f'data/releases/{published["dataset_id"]}/players.json'))
-    assert all(set(p) == {"id", "name"} for p in players)
+    base = f'data/releases/{published["dataset_id"]}'
+    index = json.loads(site.get(f"{base}/players/index.json"))
+    names, ids = (json.loads(site.get(f"{base}/players/{name}-0.json")) for name in ("names", "ids"))
+    assert index["count"] == len(names) == len(ids) == 10 and ids == sorted(ids) and index["first_id"] == [ids[0]]
+    assert all(isinstance(name, str) and "#" in name for name in names)
+    manifest = json.loads(site.get(f"{base}/manifest.json"))
+    # A game with no kills still publishes: one zero-row partition, no cells.
+    assert manifest["version"] == 2 and manifest["rows"] == 0
+    assert [(p["rows"], p["matches"], p["core"]["bytes"]) for p in manifest["parts"]] == [(0, 1, 0)]
+    assert manifest["cells"]["tiers"] == [] and manifest["meta"]["unknown_tier_matches"] == 1
     assert build_release(store, site)["dataset_id"] == published["dataset_id"]
     assert all(not key.endswith(".gz") for key in store.keys("curated/v1/"))
     pointer = site.get("data/current.json")
     with pytest.raises(ValidationError):
-        site.put(f'data/releases/{published["dataset_id"]}/players.json', b'[]', immutable=True)
+        site.put(f"{base}/players/names-0.json", b'[]', immutable=True)
     assert site.get("data/current.json") == pointer
 
 

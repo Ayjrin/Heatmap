@@ -66,14 +66,17 @@ class Controller:
                 if pointer and (run := self.state.get("RUN#" + pointer["run_id"])):
                     break
         fields = ("run_id", "mode", "status", "stage", "new_games", "target", "started_at",
-                  "updated_at", "published_version")
+                  "updated_at", "published_version", "discovered_games", "players", "scanned_players",
+                  "requests_used", "request_budget", "roster_players", "rank_lookups", "round")
         public = {key: run[key] for key in fields if key in run} if run else None
         errors = {"auth_required": ("Riot rejected the key. Development keys expire after 24 hours: "
                                     "put a fresh one in .env, then start a new collection."),
                   "failed": "Collection stopped. Completed games were saved; check the local run log.",
                   "paused": "Collection paused. Completed games were saved."}
         if public and public.get("status") in errors and public.get("mode") != "rebuild":
-            public["error"] = errors[public["status"]]
+            public["error"] = ("Collection spent its request budget for this run; completed games were published. "
+                               "Resume the run to continue against a fresh budget."
+                               if public.get("stage") == "budget_exhausted" else errors[public["status"]])
         published = self.state.get("PUBLISHED")
         dataset = {key: published[key] for key in ("dataset_id", "count") if key in published} if published else None
         return {"run": public, "dataset": dataset}
